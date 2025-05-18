@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  parakeet-mlx-api:
+    build:
+      context: /projects
+      dockerfile: /projects/parakeet-mlx_guiapi/Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - /tmp/parakeet_uploads:/tmp/parakeet_uploads
+      - /tmp/parakeet_results:/tmp/parakeet_results
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
