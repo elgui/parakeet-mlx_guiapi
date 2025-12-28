@@ -14,3 +14,5 @@ matplotlib==3.7.2
 pandas==2.0.3
 requests==2.31.0
 torch
+sounddevice>=0.4.6
+pyperclip>=1.8.0

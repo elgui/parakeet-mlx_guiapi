@@ -4,14 +4,16 @@ This project provides a comprehensive GUI and REST API for the amazing [Parakeet
 
 ## Features 🚀
 
-- Web GUI for easy transcription of audio files 🌐
+- Web GUI for easy transcription of audio files (Gradio interface) 🌐
 - REST API endpoints for seamless integration with other applications 🔌
 - Support for multiple output formats (TXT, SRT, VTT, JSON, CSV) 📄
 - Word-level timestamp highlighting in subtitle formats ✨
 - Chunking of long audio files for better memory management 🧠
 - Visualization of transcription results with timeline and heatmap 📊
 - Audio segment extraction and playback 🎧
-- Comprehensive client for command-line usage 💻
+- **Live microphone recording** with direct transcription 🎤
+- **Clipboard integration** for quick copy of transcription results 📋
+- Comprehensive CLI client with pip-installable commands 💻
 
 ## Prerequisites ✅
 
@@ -66,16 +68,24 @@ python run.py
 Or with custom options:
 
 ```bash
-python run.py --host 127.0.0.1 --port 8000 --debug
+python run.py --host 127.0.0.1 --port 8000 --debug --model <model_name>
 ```
 
+Server options:
+- `--host`: Host to bind to (default: 0.0.0.0)
+- `--port`: Port for the Flask API (default: 5000)
+- `--debug`: Enable debug mode
+- `--model`: Specify the ASR model to use
+
 The server will start and be accessible at:
-- Web GUI: http://localhost:5000 (or your custom host/port) 🌐
-- API: http://localhost:5000/api/ (or your custom host/port) 🔌
+- Gradio Web GUI: http://localhost:5001 (port + 1) 🌐
+- REST API: http://localhost:5000/api/ 🔌
+
+Note: The Gradio UI runs on port+1 from the specified port (default: 5001).
 
 ### Web GUI 🖥️
 
-1. Open your browser and navigate to http://localhost:5000
+1. Open your browser and navigate to http://localhost:5001 (Gradio interface)
 2. Upload an audio file using the interface ⬆️
 3. Configure transcription options:
    - Output Format: json, txt, srt, or vtt 📄
@@ -142,6 +152,61 @@ Example cURL request:
 ```bash
 curl http://localhost:5000/api/models
 ```
+
+### CLI Client 💻
+
+After installation, you can use the CLI client for file transcription and microphone recording:
+
+#### File Transcription
+```bash
+# Basic transcription (outputs JSON)
+python client.py audio.mp3
+
+# Specify output format
+python client.py audio.mp3 --output-format srt
+
+# With chunking for long audio files
+python client.py audio.mp3 --output-format json --chunk-duration 120
+
+# Extract a specific segment
+python client.py audio.mp3 --segment 10-20 --output-file segment.wav
+
+# Generate visualization
+python client.py audio.mp3 --output-format json --visualize
+```
+
+#### Microphone Recording 🎤
+```bash
+# Record from microphone and transcribe (press Enter to stop)
+python client.py --mic
+
+# Record and copy transcription to clipboard
+python client.py --mic --clipboard
+
+# Record and save to file
+python client.py --mic --output-file transcription.txt
+```
+
+#### CLI Options Reference
+
+| Option | Description |
+|--------|-------------|
+| `--mic` | Record from microphone instead of using a file |
+| `--clipboard` | Copy transcription result to clipboard |
+| `--api-url` | Base URL for the API (default: http://localhost:5000/api) |
+| `--output-format` | Output format: json, txt, srt, vtt, csv (default: json) |
+| `--highlight-words` | Enable word-level timestamps in SRT/VTT |
+| `--chunk-duration` | Chunking duration in seconds (default: 120, 0 to disable) |
+| `--overlap-duration` | Overlap duration in seconds (default: 15) |
+| `--output-file` | Output file path |
+| `--segment` | Extract segment (format: start_time-end_time) |
+| `--visualize` | Generate visualization (JSON output only) |
+
+#### Installable Commands
+
+After installing with pip (`pip install -e .`), you can use:
+- `parakeet-server` - Start the server
+- `parakeet-client` - Run the CLI client
 
 ## License 📜
 

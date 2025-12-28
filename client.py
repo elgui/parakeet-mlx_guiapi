@@ -3,6 +3,7 @@
 Client script for Parakeet-MLX API.
 
 This script provides a command-line client for the Parakeet-MLX API.
+Supports both file-based transcription via API and live microphone recording.
 """
 
 import argparse
@@ -12,9 +13,98 @@ import os
 import sys
 from pathlib import Path
 
+# Add the parakeet-mlx directory to sys.path for direct transcription
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+parakeet_path = os.path.join(parent_dir, 'parakeet-mlx')
+sys.path.insert(0, current_dir)
+sys.path.insert(0, parakeet_path)
+
+
+def transcribe_from_microphone(args):
+    """
+    Record audio from microphone and transcribe it.
+
+    Parameters:
+    - args: Parsed command-line arguments
+
+    Returns:
+    - Exit code (0 for success, 1 for failure)
+    """
+    try:
+        import pyperclip
+        from parakeet_mlx_guiapi.microphone import MicrophoneRecorder
+        from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+    except ImportError as e:
+        print(f"Error: Missing dependency for microphone mode: {e}")
+        print("Install with: pip install sounddevice pyperclip")
+        return 1
+
+    temp_audio_path = None
+
+    try:
+        # Record audio from microphone
+        print("Starting microphone recording...")
+        recorder = MicrophoneRecorder()
+        temp_audio_path = recorder.record_until_keypress()
+
+        # Transcribe using local transcriber (bypass API)
+        print("Transcribing audio...")
+        transcriber = AudioTranscriber()
+        df, full_text = transcriber.transcribe(
+            temp_audio_path,
+            chunk_duration=args.chunk_duration if args.chunk_duration > 0 else None,
+            overlap_duration=args.overlap_duration
+        )
+
+        if df is None or full_text is None:
+            print("Error: Transcription failed")
+            return 1
+
+        print("\n" + "=" * 50)
+        print("TRANSCRIPTION:")
+        print("=" * 50)
+        print(full_text)
+        print("=" * 50 + "\n")
+
+        # Handle clipboard output
+        if args.clipboard:
+            pyperclip.copy(full_text)
+            print("Transcription copied to clipboard!")
+
+        # Handle file output
+        if args.output_file:
+            with open(args.output_file, 'w', encoding='utf-8') as f:
+                if args.output_format == 'json':
+                    import json
+                    json.dump({
+                        "text": full_text,
+                        "segments": df.to_dict(orient='records')
+                    }, f, indent=2, ensure_ascii=False)
+                else:
+                    f.write(full_text)
+            print(f"Transcription saved to: {args.output_file}")
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\nRecording cancelled.")
+        return 1
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        # Clean up temporary audio file
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
+            print(f"Cleaned up temporary file: {temp_audio_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Parakeet-MLX API Client')
-    parser.add_argument('audio_file', type=str, help='Path to the audio file to transcribe')
+    parser.add_argument('audio_file', type=str, nargs='?', help='Path to the audio file to transcribe (not needed with --mic)')
+    parser.add_argument('--mic', action='store_true', help='Record from microphone instead of using a file')
+    parser.add_argument('--clipboard', action='store_true', help='Copy transcription result to clipboard')
     parser.add_argument('--api-url', type=str, default='http://localhost:5000/api', help='Base URL for the API')
     parser.add_argument('--output-format', type=str, choices=['json', 'txt', 'srt', 'vtt', 'csv'], default='json', help='Output format')
     parser.add_argument('--highlight-words', action='store_true', help='Enable word-level timestamps in SRT/VTT')
@@ -25,6 +115,16 @@ def main():
     parser.add_argument('--visualize', action='store_true', help='Generate visualization (only for JSON output)')
 
     args = parser.parse_args()
+
+    # Handle microphone recording mode
+    if args.mic:
+        return transcribe_from_microphone(args)
+
+    # For file-based mode, audio_file is required
+    if not args.audio_file:
+        print("Error: audio_file is required (or use --mic for microphone recording)")
+        parser.print_help()
+        return 1
 
     # Check if the audio file exists
     if not os.path.isfile(args.audio_file):
