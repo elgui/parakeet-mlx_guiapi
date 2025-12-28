@@ -4,11 +4,17 @@ Audio transcription module for Parakeet-MLX GUI and API.
 This module provides the AudioTranscriber class for transcribing audio files.
 """
 
+import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
 import tempfile
 import io
+import logging
+import traceback
+
+# Get logger
+logger = logging.getLogger("parakeet")
 
 # Import the parakeet_mlx library (installed via pip)
 from parakeet_mlx import from_pretrained
@@ -22,9 +28,18 @@ class AudioTranscriber:
         Parameters:
         - model_name: HuggingFace model path for the ASR model
         """
+        logger.info(f"AudioTranscriber.__init__ called with model: {model_name}")
         print(f"Loading model: {model_name}...")
-        self.model = from_pretrained(model_name)
-        print("Model loaded successfully")
+
+        try:
+            logger.info("Calling parakeet_mlx.from_pretrained()...")
+            self.model = from_pretrained(model_name)
+            logger.info("from_pretrained() returned successfully")
+            print("Model loaded successfully")
+        except Exception as e:
+            logger.error(f"from_pretrained() failed: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise
 
     def preprocess_audio(self, audio_path):
         """
@@ -126,8 +141,10 @@ class AudioTranscriber:
             return df, result.text
             
         except Exception as e:
+            logger.error(f"Error during transcription: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             print(f"Error during transcription: {e}")
-            return None, None
+            raise  # Re-raise so caller can handle it properly
             
         finally:
             # Cleanup

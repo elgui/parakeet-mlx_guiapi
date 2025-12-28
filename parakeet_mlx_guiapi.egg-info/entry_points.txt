@@ -1,0 +1,4 @@
+[console_scripts]
+parakeet-client = client:main
+parakeet-menubar = menubar_app:main
+parakeet-server = run:main

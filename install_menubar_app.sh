@@ -10,6 +10,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="Parakeet"
+INSTALL_DIR="$HOME/.parakeet"
 APP_PATH="$SCRIPT_DIR/dist/$APP_NAME.app"
 INSTALL_PATH="/Applications/$APP_NAME.app"
 
@@ -29,26 +30,116 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-# Install dependencies
-echo "📦 Installing dependencies..."
-pip3 install -q rumps py2app pyobjc-framework-Cocoa
+# Check for required dependencies
+echo "📦 Checking dependencies..."
+python3 -c "import rumps, pyperclip, sounddevice, parakeet_mlx" 2>/dev/null || {
+    echo "⚠️  Some dependencies are missing. Installing..."
+    pip3 install -q rumps pyperclip sounddevice parakeet-mlx scipy
+}
+
+# Install py2app if needed
+pip3 install -q py2app 2>/dev/null || true
 
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
 rm -rf "$SCRIPT_DIR/build" "$SCRIPT_DIR/dist"
 
-# Build the app
+# Build the app using alias mode (fast, lightweight)
 echo "🔨 Building Parakeet.app..."
 cd "$SCRIPT_DIR"
-python3 setup_app.py py2app --quiet 2>/dev/null || python3 setup_app.py py2app
+python3 setup_app.py py2app --alias 2>&1 | grep -E "(error|Error|Done)" || true
 
 if [ ! -d "$APP_PATH" ]; then
-    echo "❌ Error: Build failed. Check the output above for errors."
+    echo "❌ Error: Build failed."
     exit 1
 fi
 
 echo "✅ Build successful!"
 echo ""
+
+# Create installation directory for source files
+echo "📁 Setting up installation..."
+mkdir -p "$INSTALL_DIR"
+
+# Copy source files to install directory
+cp -R "$SCRIPT_DIR/menubar_app.py" "$INSTALL_DIR/"
+cp -R "$SCRIPT_DIR/parakeet_mlx_guiapi" "$INSTALL_DIR/"
+
+# Detect the venv Python path
+VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+if [ ! -f "$VENV_PYTHON" ]; then
+    VENV_PYTHON="$SCRIPT_DIR/venv/bin/python3"
+fi
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "⚠️  No virtual environment found. Using system Python."
+    VENV_PYTHON="python3"
+fi
+
+VENV_SITE_PACKAGES="$(dirname "$VENV_PYTHON")/../lib/python3.*/site-packages"
+VENV_SITE_PACKAGES=$(echo $VENV_SITE_PACKAGES)  # Expand glob
+
+echo "📍 Using Python: $VENV_PYTHON"
+
+# Create a wrapper script that the app will use
+cat > "$INSTALL_DIR/run_parakeet.py" << PYTHON_SCRIPT
+#!${VENV_PYTHON}
+import os
+import sys
+
+# Add install dir and venv site-packages to path
+install_dir = os.path.dirname(os.path.abspath(__file__))
+venv_site = "${VENV_SITE_PACKAGES}"
+
+# Insert venv site-packages FIRST to override system packages
+if os.path.exists(venv_site):
+    sys.path.insert(0, venv_site)
+sys.path.insert(0, install_dir)
+
+# Import and run
+from menubar_app import main
+main()
+PYTHON_SCRIPT
+
+chmod +x "$INSTALL_DIR/run_parakeet.py"
+
+# Build the app pointing to installed location
+echo "🔨 Building final app..."
+rm -rf "$SCRIPT_DIR/build" "$SCRIPT_DIR/dist"
+
+# Create a temporary setup for the installed location
+cat > "$INSTALL_DIR/setup_app.py" << 'SETUP_SCRIPT'
+import sys
+from setuptools import setup
+sys.setrecursionlimit(5000)
+
+OPTIONS = {
+    'argv_emulation': False,
+    'plist': {
+        'CFBundleName': 'Parakeet',
+        'CFBundleDisplayName': 'Parakeet Voice-to-Clipboard',
+        'CFBundleIdentifier': 'com.parakeet.menubar',
+        'CFBundleVersion': '0.1.0',
+        'CFBundleShortVersionString': '0.1.0',
+        'LSUIElement': True,
+        'NSMicrophoneUsageDescription': 'Parakeet needs microphone access to record and transcribe your voice.',
+    },
+}
+
+setup(
+    app=['run_parakeet.py'],
+    name='Parakeet',
+    options={'py2app': OPTIONS},
+    setup_requires=['py2app'],
+)
+SETUP_SCRIPT
+
+cd "$INSTALL_DIR"
+python3 setup_app.py py2app --alias 2>&1 | grep -E "(error|Error|Done)" || true
+
+if [ ! -d "$INSTALL_DIR/dist/$APP_NAME.app" ]; then
+    echo "❌ Error: Final build failed."
+    exit 1
+fi
 
 # Install to Applications
 echo "📁 Installing to /Applications..."
@@ -56,9 +147,12 @@ if [ -d "$INSTALL_PATH" ]; then
     echo "   Removing existing installation..."
     rm -rf "$INSTALL_PATH"
 fi
-cp -R "$APP_PATH" "$INSTALL_PATH"
+cp -R "$INSTALL_DIR/dist/$APP_NAME.app" "$INSTALL_PATH"
 echo "✅ Installed to $INSTALL_PATH"
 echo ""
+
+# Clean up build artifacts in install dir
+rm -rf "$INSTALL_DIR/build" "$INSTALL_DIR/dist" "$INSTALL_DIR/setup_app.py"
 
 # Ask about Login Items
 echo "🚀 Would you like Parakeet to start automatically at login?"
@@ -76,6 +170,9 @@ echo ""
 echo "=================================="
 echo "🎉 Installation complete!"
 echo ""
+echo "Source files installed to: $INSTALL_DIR"
+echo "App installed to: $INSTALL_PATH"
+echo ""
 echo "To start Parakeet now:"
 echo "   open /Applications/Parakeet.app"
 echo ""
@@ -90,6 +187,9 @@ echo "=================================="
 read -p "Launch Parakeet now? [Y/n] " -n 1 -r
 echo ""
 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    # Kill any existing instance first
+    pkill -f "Parakeet.app" 2>/dev/null || true
+    sleep 1
     open "$INSTALL_PATH"
     echo "🦜 Parakeet is now running in your menu bar!"
 fi

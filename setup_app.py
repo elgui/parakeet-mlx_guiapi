@@ -2,12 +2,17 @@
 py2app setup script for Parakeet Menu Bar App.
 
 Usage:
-    python setup_app.py py2app
+    python setup_app.py py2app --alias
 
-This creates a standalone macOS app in the dist/ folder.
+This creates a macOS app that references the source files directly.
+The app requires Python and dependencies to be installed on the system.
 """
 
+import sys
 from setuptools import setup
+
+# Increase recursion limit for py2app
+sys.setrecursionlimit(5000)
 
 APP = ['menubar_app.py']
 DATA_FILES = []
@@ -24,19 +29,6 @@ OPTIONS = {
         'LSUIElement': True,  # Hide from Dock (menu bar app)
         'NSMicrophoneUsageDescription': 'Parakeet needs microphone access to record and transcribe your voice.',
     },
-    'packages': [
-        'parakeet_mlx_guiapi',
-        'rumps',
-        'pyperclip',
-        'sounddevice',
-        'numpy',
-        'scipy',
-        'pandas',
-        'mlx',
-    ],
-    'includes': [
-        'parakeet_mlx',
-    ],
 }
 
 setup(

@@ -8,15 +8,65 @@ Click to start recording, click again to stop and copy to clipboard.
 
 import os
 import sys
+import builtins
+
+# Fix UTF-8 encoding issues for macOS GUI apps
+# parakeet_mlx opens files without encoding specified, and macOS GUI apps
+# don't inherit UTF-8 locale from terminal, defaulting to ASCII
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['LC_ALL'] = 'en_US.UTF-8'
+os.environ['LANG'] = 'en_US.UTF-8'
+
+# Fix PATH for macOS GUI apps - they don't inherit shell PATH
+# Add common Homebrew paths where ffmpeg is typically installed
+homebrew_paths = [
+    '/opt/homebrew/bin',  # Apple Silicon
+    '/usr/local/bin',     # Intel Mac
+]
+current_path = os.environ.get('PATH', '')
+for path in homebrew_paths:
+    if path not in current_path and os.path.isdir(path):
+        os.environ['PATH'] = f"{path}:{current_path}"
+        current_path = os.environ['PATH']
+
+# Monkey-patch open() to default to UTF-8 for text mode
+_original_open = builtins.open
+
+def _utf8_open(file, mode='r', buffering=-1, encoding=None, errors=None,
+               newline=None, closefd=True, opener=None):
+    """Wrapper around open() that defaults to UTF-8 encoding for text mode."""
+    if encoding is None and 'b' not in mode:
+        encoding = 'utf-8'
+    return _original_open(file, mode, buffering, encoding, errors,
+                         newline, closefd, opener)
+
+builtins.open = _utf8_open
+
 import threading
 import tempfile
 import time
 import json
+import logging
+import traceback
 from datetime import datetime
 from pathlib import Path
 
 import rumps
 import pyperclip
+import subprocess
+import webbrowser
+
+# Setup logging to file
+LOG_PATH = Path.home() / ".parakeet_mlx.log"
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_PATH),
+        logging.StreamHandler()  # Also print to console
+    ]
+)
+logger = logging.getLogger("parakeet")
 
 # Add current dir for local imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,32 +76,116 @@ from parakeet_mlx_guiapi.utils.config import get_config, save_config
 
 
 # Available models (from mlx-community on HuggingFace)
+# Organized by category with detailed metadata
 AVAILABLE_MODELS = [
+    # === TDT Models (Best accuracy, good speed) ===
     {
         "id": "mlx-community/parakeet-tdt-0.6b-v3",
-        "name": "Parakeet TDT 0.6B v3",
-        "description": "Fast, good accuracy (recommended)",
-        "size": "~600MB"
+        "name": "TDT 0.6B v3 Multilingual",
+        "category": "Multilingual",
+        "description": "25 languages incl. French, Spanish",
+        "size": "~1.2GB",
+        "languages": "EN, FR, ES, DE, IT, PT + 19 more",
+        "lang_list": ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "uk", "cs", "sk", "bg", "hr", "da", "et", "fi", "el", "hu", "lv", "lt", "mt", "ro", "sl", "sv"],
+        "wer": "6.34%",
+        "speed": "Fast",
+        "features": ["Auto punctuation", "Auto language detection", "Best for multilingual"],
+        "recommended": True,
     },
     {
-        "id": "mlx-community/parakeet-tdt-1.1b-v2",
-        "name": "Parakeet TDT 1.1B v2",
-        "description": "Slower, better accuracy",
-        "size": "~1.1GB"
+        "id": "mlx-community/parakeet-tdt-0.6b-v2",
+        "name": "TDT 0.6B v2 English",
+        "category": "English",
+        "description": "English-only, very accurate",
+        "size": "~1.2GB",
+        "languages": "English only",
+        "lang_list": ["en"],
+        "wer": "6.5%",
+        "speed": "Fast",
+        "features": ["Auto punctuation", "Timestamps"],
+        "recommended": False,
     },
     {
-        "id": "mlx-community/parakeet-ctc-0.6b-v2",
-        "name": "Parakeet CTC 0.6B v2",
-        "description": "CTC model, different architecture",
-        "size": "~600MB"
+        "id": "mlx-community/parakeet-tdt-1.1b",
+        "name": "TDT 1.1B English",
+        "category": "English",
+        "description": "Best English accuracy",
+        "size": "~2.2GB",
+        "languages": "English only",
+        "lang_list": ["en"],
+        "wer": "~5.5%",
+        "speed": "Slower",
+        "features": ["Auto punctuation", "Best for meetings/interviews"],
+        "recommended": False,
+    },
+
+    # === CTC Models (Fastest inference) ===
+    {
+        "id": "mlx-community/parakeet-ctc-0.6b",
+        "name": "CTC 0.6B English",
+        "category": "Fast",
+        "description": "Fastest inference",
+        "size": "~1.2GB",
+        "languages": "English only",
+        "lang_list": ["en"],
+        "wer": "~7%",
+        "speed": "Fastest",
+        "features": ["Non-autoregressive", "Real-time capable"],
+        "recommended": False,
     },
     {
         "id": "mlx-community/parakeet-ctc-1.1b",
-        "name": "Parakeet CTC 1.1B",
-        "description": "Larger CTC model",
-        "size": "~1.1GB"
+        "name": "CTC 1.1B English",
+        "category": "Fast",
+        "description": "Fast + better accuracy",
+        "size": "~2.2GB",
+        "languages": "English only",
+        "lang_list": ["en"],
+        "wer": "~6%",
+        "speed": "Very Fast",
+        "features": ["Non-autoregressive", "Long audio support"],
+        "recommended": False,
+    },
+
+    # === Hybrid & Special Models ===
+    {
+        "id": "mlx-community/parakeet-tdt_ctc-1.1b",
+        "name": "TDT+CTC 1.1B English",
+        "category": "Long Audio",
+        "description": "11hr audio in one pass",
+        "size": "~2.2GB",
+        "languages": "English only",
+        "lang_list": ["en"],
+        "wer": "~5.8%",
+        "speed": "Medium",
+        "features": ["Dual decoder", "Best for long recordings", "Podcasts/lectures"],
+        "recommended": False,
+    },
+    {
+        "id": "mlx-community/parakeet-tdt_ctc-110m",
+        "name": "TDT+CTC 110M Tiny",
+        "category": "Lightweight",
+        "description": "Smallest, instant loading",
+        "size": "~220MB",
+        "languages": "English only",
+        "lang_list": ["en"],
+        "wer": "~12%",
+        "speed": "Instant",
+        "features": ["Ultra lightweight", "Quick notes"],
+        "recommended": False,
     },
 ]
+
+# Group models by category for menu display
+def get_models_by_category():
+    """Group models by their category."""
+    categories = {}
+    for model in AVAILABLE_MODELS:
+        cat = model.get("category", "Other")
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(model)
+    return categories
 
 
 class ParakeetMenuBarApp(rumps.App):
@@ -86,11 +220,33 @@ class ParakeetMenuBarApp(rumps.App):
         self.history = []
         self._load_history()
 
+        # Error tracking for debugging
+        self._last_error = None
+
         # Build menu - rumps requires menu items to be created here
         self._setup_menu()
 
-        # Lazy-load transcriber in background
-        threading.Thread(target=self._init_transcriber, daemon=True).start()
+        # Lazy-load transcriber in background (with download progress if needed)
+        threading.Thread(target=self._init_transcriber_with_download, daemon=True).start()
+
+    def _init_transcriber_with_download(self):
+        """Initialize transcriber, downloading in Terminal if needed."""
+        model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+        model_info = self._get_model_by_id(model_name) or {}
+
+        logger.info(f"Starting transcriber initialization for: {model_name}")
+
+        is_cached = self._is_model_cached(model_name)
+        logger.info(f"Model cache check: {'cached' if is_cached else 'not cached'}")
+
+        if not is_cached:
+            # Model needs download - use Terminal for progress
+            logger.info("Model needs download, opening Terminal...")
+            self._download_and_load_model(model_info if model_info else {"id": model_name, "name": model_name.split("/")[-1]})
+        else:
+            # Model is cached, load directly
+            logger.info("Model is cached, loading directly...")
+            self._init_transcriber()
 
     def _setup_menu(self):
         """Set up the initial menu structure."""
@@ -100,8 +256,8 @@ class ParakeetMenuBarApp(rumps.App):
             callback=self.toggle_recording
         )
 
-        # Status display
-        self.status_item = rumps.MenuItem("Status: Loading model...")
+        # Status display (clickable for error details)
+        self.status_item = rumps.MenuItem("Status: Loading model...", callback=self.status_clicked)
 
         # Model selection submenu - build items directly
         self.model_menu = rumps.MenuItem("Model")
@@ -133,25 +289,73 @@ class ParakeetMenuBarApp(rumps.App):
         ]
 
     def _populate_model_menu(self):
-        """Populate the model selection menu."""
+        """Populate the model selection menu organized by category."""
         current_model = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+        categories = get_models_by_category()
 
-        for model in AVAILABLE_MODELS:
-            # Create menu item with checkmark for current model
-            title = model["name"]
-            if model["id"] == current_model:
-                title = f"✓ {title}"
+        # Define category order
+        category_order = [
+            "Multilingual",
+            "English",
+            "Fast",
+            "Long Audio",
+            "Lightweight",
+        ]
 
-            item = rumps.MenuItem(
-                title,
-                callback=lambda sender, m=model: self.select_model(m)
-            )
-            self.model_menu.add(item)
+        for category in category_order:
+            if category not in categories:
+                continue
 
-        # Add separator and info
+            # Add category header
+            cat_submenu = rumps.MenuItem(category)
+
+            for model in categories[category]:
+                # Build display title with checkmark and details
+                title = model["name"]
+                if model["id"] == current_model:
+                    title = f"✓ {title}"
+                if model.get("recommended"):
+                    title = f"⭐ {title}"
+
+                item = rumps.MenuItem(
+                    title,
+                    callback=lambda sender, m=model: self.select_model(m)
+                )
+                cat_submenu.add(item)
+
+            self.model_menu.add(cat_submenu)
+
+        # Add separator and current model info
         self.model_menu.add(None)
-        info_item = rumps.MenuItem(f"Size: {self._get_model_size(current_model)}")
-        self.model_menu.add(info_item)
+
+        # Show current model details
+        current = self._get_model_by_id(current_model)
+        if current:
+            info_items = [
+                f"Current: {current['name']}",
+                f"Languages: {current.get('languages', 'Unknown')}",
+                f"WER: {current.get('wer', 'N/A')}",
+                f"Speed: {current.get('speed', 'N/A')}",
+                f"Size: {current.get('size', 'Unknown')}",
+            ]
+            for info in info_items:
+                self.model_menu.add(rumps.MenuItem(info))
+
+            # Show features if available
+            features = current.get("features", [])
+            if features:
+                self.model_menu.add(None)
+                feat_menu = rumps.MenuItem("Features")
+                for feat in features:
+                    feat_menu.add(rumps.MenuItem(f"• {feat}"))
+                self.model_menu.add(feat_menu)
+
+    def _get_model_by_id(self, model_id):
+        """Get model dict by its ID."""
+        for model in AVAILABLE_MODELS:
+            if model["id"] == model_id:
+                return model
+        return None
 
     def _get_model_short_name(self, model_id):
         """Get short display name for a model ID."""
@@ -169,7 +373,89 @@ class ParakeetMenuBarApp(rumps.App):
 
     def _populate_settings_menu(self):
         """Populate the settings submenu."""
-        # Chunk duration options
+        # === Diarization (Speaker ID) ===
+        diarize_enabled = self.config.get("diarization_enabled", False)
+        diarize_available, diarize_msg = self._check_diarization_available()
+
+        # Create diarization submenu
+        diarize_menu = rumps.MenuItem("Speaker Diarization")
+
+        if diarize_available:
+            # Check for missing model access (do this in background to avoid blocking menu)
+            missing_models = []
+            try:
+                # Quick check - only block briefly
+                missing_models = self._check_all_models_accessible()
+            except Exception:
+                pass  # Network error, etc. - proceed optimistically
+
+            if missing_models:
+                # Some models still need access
+                diarize_menu.add(rumps.MenuItem("⚠️ Model access incomplete"))
+                diarize_menu.add(None)
+                for model_id, desc in missing_models:
+                    short_name = model_id.split("/")[-1]
+                    diarize_menu.add(rumps.MenuItem(f"❌ {short_name}"))
+                diarize_menu.add(None)
+                diarize_menu.add(rumps.MenuItem("🚀 Complete Setup...", callback=self.start_diarization_setup))
+            else:
+                # All good - show full options
+                # Toggle option
+                toggle_title = "✓ Enabled" if diarize_enabled else "Enabled"
+                diarize_menu.add(rumps.MenuItem(toggle_title, callback=self.toggle_diarization))
+                diarize_menu.add(None)
+
+                # Number of speakers submenu
+                speakers_menu = rumps.MenuItem("Number of Speakers")
+                current_speakers = self.config.get("diarization_num_speakers", 0)  # 0 = auto
+
+                # Auto-detect option
+                auto_title = "✓ Auto-detect" if current_speakers == 0 else "Auto-detect"
+                speakers_menu.add(rumps.MenuItem(
+                    auto_title,
+                    callback=lambda _: self.set_num_speakers(0)
+                ))
+                speakers_menu.add(None)
+
+                # Preset options: 2-6 speakers
+                for num in range(2, 7):
+                    title = f"{num} speakers"
+                    if current_speakers == num:
+                        title = f"✓ {title}"
+                    speakers_menu.add(rumps.MenuItem(
+                        title,
+                        callback=lambda _, n=num: self.set_num_speakers(n)
+                    ))
+
+                diarize_menu.add(speakers_menu)
+                diarize_menu.add(None)
+                diarize_menu.add(rumps.MenuItem("✅ Setup complete"))
+        else:
+            # Show what's missing and setup options
+            diarize_menu.add(rumps.MenuItem("⚠️ Setup required"))
+            diarize_menu.add(None)
+
+            # Check specific issues
+            pyannote_ok, token_ok = self._check_diarization_components()
+
+            if pyannote_ok:
+                diarize_menu.add(rumps.MenuItem("✅ pyannote.audio installed"))
+            else:
+                diarize_menu.add(rumps.MenuItem("❌ pyannote.audio not installed"))
+                diarize_menu.add(rumps.MenuItem("   Install: pip install pyannote.audio"))
+
+            if token_ok:
+                diarize_menu.add(rumps.MenuItem("✅ HuggingFace token set"))
+            else:
+                diarize_menu.add(rumps.MenuItem("❌ HuggingFace token missing"))
+
+            diarize_menu.add(None)
+            diarize_menu.add(rumps.MenuItem("🚀 Quick Setup...", callback=self.start_diarization_setup))
+
+        self.settings_menu.add(diarize_menu)
+        self.settings_menu.add(None)
+
+        # === Chunk duration options ===
         chunk_menu = rumps.MenuItem("Chunk Duration")
         chunk_options = [30, 60, 120, 180, 300]
         current_chunk = self.config.get("default_chunk_duration", 120)
@@ -198,10 +484,602 @@ class ParakeetMenuBarApp(rumps.App):
         notif_item = rumps.MenuItem(notif_title, callback=self.toggle_notifications)
         self.settings_menu.add(notif_item)
 
-        # Separator and config file location
+        # === Advanced section ===
         self.settings_menu.add(None)
-        config_item = rumps.MenuItem("Config: ~/.parakeet_mlx_guiapi.json")
-        self.settings_menu.add(config_item)
+        advanced_menu = rumps.MenuItem("Advanced")
+
+        # Show Python environment
+        python_path = sys.executable
+        python_short = python_path if len(python_path) < 40 else "..." + python_path[-37:]
+        advanced_menu.add(rumps.MenuItem(f"Python: {python_short}"))
+
+        # Show cache location
+        cache_path = self._get_cache_path()
+        cache_short = cache_path if len(cache_path) < 40 else "..." + cache_path[-37:]
+        advanced_menu.add(rumps.MenuItem(f"Cache: {cache_short}"))
+
+        advanced_menu.add(None)
+
+        # Pre-download models option
+        advanced_menu.add(rumps.MenuItem("Pre-download Model...", callback=self.predownload_model))
+
+        # Open cache folder
+        advanced_menu.add(rumps.MenuItem("Open Cache Folder", callback=self.open_cache_folder))
+
+        # Config file location
+        advanced_menu.add(rumps.MenuItem("Open Config File", callback=self.open_config_file))
+
+        advanced_menu.add(None)
+
+        # Logging and debugging
+        advanced_menu.add(rumps.MenuItem("View Logs", callback=self.view_logs))
+        advanced_menu.add(rumps.MenuItem("View Last Error", callback=self.view_last_error))
+
+        advanced_menu.add(None)
+
+        # Reload/Restart
+        advanced_menu.add(rumps.MenuItem("Reload Model", callback=self.reload_model))
+
+        self.settings_menu.add(advanced_menu)
+
+    def _check_diarization_available(self):
+        """Check if diarization is fully available."""
+        try:
+            from parakeet_mlx_guiapi.diarization import SpeakerDiarizer
+            # Also check config for token
+            token = (
+                self.config.get("huggingface_token")
+                or os.environ.get("HUGGINGFACE_TOKEN")
+                or os.environ.get("HF_TOKEN")
+            )
+            if not token:
+                return False, "HuggingFace token not set"
+            return SpeakerDiarizer.is_available()
+        except ImportError:
+            return False, "pyannote.audio not installed"
+
+    def _check_diarization_components(self):
+        """Check individual diarization components."""
+        # Check pyannote
+        try:
+            import pyannote.audio
+            pyannote_ok = True
+        except ImportError:
+            pyannote_ok = False
+
+        # Check token (config or env)
+        token = (
+            self.config.get("huggingface_token")
+            or os.environ.get("HUGGINGFACE_TOKEN")
+            or os.environ.get("HF_TOKEN")
+        )
+        token_ok = bool(token)
+
+        return pyannote_ok, token_ok
+
+    def _check_model_access(self, model_id: str) -> bool:
+        """Check if user has access to a HuggingFace model."""
+        try:
+            from huggingface_hub import model_info
+            token = (
+                self.config.get("huggingface_token")
+                or os.environ.get("HUGGINGFACE_TOKEN")
+                or os.environ.get("HF_TOKEN")
+            )
+            # Try to get model info - will raise if no access
+            model_info(model_id, token=token)
+            return True
+        except Exception as e:
+            if "403" in str(e) or "restricted" in str(e) or "gated" in str(e).lower():
+                return False
+            # Other errors (network, etc.) - assume accessible
+            return True
+
+    def _get_required_diarization_models(self):
+        """Get list of required models for diarization."""
+        return [
+            ("pyannote/speaker-diarization-3.1", "Main pipeline"),
+            ("pyannote/segmentation-3.0", "Voice detection"),
+            ("pyannote/wespeaker-voxceleb-resnet34-LM", "Speaker embeddings"),
+            ("pyannote/speaker-diarization", "Base diarization"),
+            ("pyannote/speaker-diarization-community-1", "Community model"),
+        ]
+
+    def _check_all_models_accessible(self):
+        """Check if all required diarization models are accessible."""
+        models = self._get_required_diarization_models()
+        missing = []
+        for model_id, desc in models:
+            if not self._check_model_access(model_id):
+                missing.append((model_id, desc))
+        return missing
+
+    def toggle_diarization(self, _):
+        """Toggle speaker diarization."""
+        available, msg = self._check_diarization_available()
+        if not available:
+            self.start_diarization_setup(None)
+            return
+
+        current = self.config.get("diarization_enabled", False)
+        self.config["diarization_enabled"] = not current
+        save_config(self.config)
+        self._refresh_settings_menu()
+
+        status = "enabled" if not current else "disabled"
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Speaker Diarization",
+                subtitle=status.capitalize(),
+                message="Transcripts will include speaker labels" if not current else "Speaker labels disabled",
+                sound=False
+            )
+
+    def set_num_speakers(self, num_speakers):
+        """Set the number of speakers for diarization."""
+        self.config["diarization_num_speakers"] = num_speakers
+        save_config(self.config)
+        self._refresh_settings_menu()
+
+        if num_speakers == 0:
+            msg = "Will auto-detect number of speakers"
+        else:
+            msg = f"Will identify {num_speakers} speakers"
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Speaker Diarization",
+                subtitle=f"{'Auto-detect' if num_speakers == 0 else f'{num_speakers} speakers'}",
+                message=msg,
+                sound=False
+            )
+
+    def start_diarization_setup(self, _):
+        """Interactive diarization setup wizard."""
+        pyannote_ok, token_ok = self._check_diarization_components()
+
+        # Step 1: Check pyannote
+        if not pyannote_ok:
+            response = rumps.alert(
+                title="Speaker Diarization Setup (1/3)",
+                message=(
+                    "pyannote.audio is not installed.\n\n"
+                    "This is required for speaker identification.\n"
+                    "Install size: ~500MB\n\n"
+                    "Install now?"
+                ),
+                ok="Install",
+                cancel="Cancel"
+            )
+            if response == 1:  # OK clicked
+                self._install_pyannote()
+            return
+
+        # Step 2: Check token
+        if not token_ok:
+            response = rumps.alert(
+                title="Speaker Diarization Setup (2/3)",
+                message=(
+                    "HuggingFace token is required.\n\n"
+                    "You need:\n"
+                    "1. A free HuggingFace account\n"
+                    "2. Accept the pyannote model license\n"
+                    "3. A 'Read' access token (not Write)\n\n"
+                    "Already have a token starting with 'hf_...'?"
+                ),
+                ok="I have a token",
+                cancel="Guide me through setup"
+            )
+
+            if response == 0:  # Cancel = Open HuggingFace
+                self._open_huggingface_setup()
+            else:  # OK = Enter token
+                self._prompt_for_token()
+            return
+
+        # Step 3: All set - enable and test
+        self._finalize_diarization_setup()
+
+    def _install_pyannote(self):
+        """Install pyannote.audio package with visible progress in Terminal."""
+        # Get Python executable path
+        python_path = sys.executable
+
+        # Build the install command with progress display
+        # Note: On macOS, pip automatically installs CPU/MPS version of PyTorch (no CUDA)
+        install_cmd = f'''
+clear
+echo "══════════════════════════════════════════════════════════════"
+echo "  Installing pyannote.audio for Speaker Diarization"
+echo "══════════════════════════════════════════════════════════════"
+echo ""
+echo "Python: {python_path}"
+echo "Platform: Apple Silicon (MPS/CPU - no CUDA needed)"
+echo ""
+echo "This may take a few minutes..."
+echo "Installing PyTorch + pyannote.audio..."
+echo ""
+"{python_path}" -m pip install --progress-bar on "pyannote.audio>=3.1.0"
+EXIT_CODE=$?
+echo ""
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "✅ Installation complete!"
+    echo ""
+    echo "pyannote will use CPU for maximum compatibility."
+    echo "(Apple Silicon GPU/MPS is experimental for pyannote)"
+    echo ""
+    echo "You can close this window and continue setup in Parakeet."
+else
+    echo "❌ Installation failed (exit code: $EXIT_CODE)"
+    echo ""
+    echo "Try running manually:"
+    echo "  {python_path} -m pip install pyannote.audio"
+fi
+echo ""
+echo "Press any key to close..."
+read -n 1
+'''
+
+        # Open Terminal with the install command
+        script = f'''
+        tell application "Terminal"
+            activate
+            do script "{install_cmd.replace('"', '\\"').replace('\n', '\\n')}"
+        end tell
+        '''
+
+        try:
+            subprocess.run(["osascript", "-e", script], check=True)
+            self.status_item.title = "Installing... (see Terminal)"
+        except Exception as e:
+            rumps.alert(
+                title="Could not open Terminal",
+                message=f"Error: {e}\n\nTry installing manually:\npip install pyannote.audio"
+            )
+
+    def _open_huggingface_setup(self):
+        """Open HuggingFace pages for setup."""
+        # Show detailed instructions with ALL required models
+        models = self._get_required_diarization_models()
+        rumps.alert(
+            title=f"HuggingFace Setup (Step 1 of {len(models) + 1})",
+            message=(
+                f"Speaker diarization requires access to {len(models)} models.\n\n"
+                "For each model, you need to:\n"
+                "1. Sign in (or create a free account)\n"
+                "2. Scroll to 'Agree and access repository'\n"
+                "3. Click to accept the license\n\n"
+                "I'll open each model page in sequence."
+            ),
+            ok="Start Setup"
+        )
+
+        for i, (model, desc) in enumerate(models, 1):
+            rumps.alert(
+                title=f"Accept Model License ({i}/{len(models)})",
+                message=(
+                    f"Model: {model}\n"
+                    f"Purpose: {desc}\n\n"
+                    "Click OK to open the model page.\n"
+                    "Accept the license, then come back."
+                ),
+                ok="Open Model Page"
+            )
+            webbrowser.open(f"https://huggingface.co/{model}")
+
+        # Show token instructions
+        rumps.alert(
+            title=f"HuggingFace Setup (Final Step)",
+            message=(
+                "Now create an access token.\n\n"
+                "Create a token with these settings:\n"
+                "• Name: 'Parakeet' (or anything)\n"
+                "• Type: 'Read' (NOT Write)\n\n"
+                "Copy the token (starts with 'hf_...')\n"
+                "Then click 'Quick Setup' → 'I have a token'"
+            ),
+            ok="Open Token Page"
+        )
+
+        webbrowser.open("https://huggingface.co/settings/tokens/new?tokenType=read")
+
+    def _prompt_for_token(self):
+        """Prompt user to enter their HuggingFace token."""
+        # Use AppleScript for text input (rumps doesn't have input dialogs)
+        script = '''
+        tell application "System Events"
+            display dialog "Paste your HuggingFace token:" default answer "" with title "Enter Token" buttons {"Cancel", "Save"} default button "Save"
+            if button returned of result is "Save" then
+                return text returned of result
+            end if
+        end tell
+        '''
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True
+            )
+            token = result.stdout.strip()
+
+            if token and len(token) > 10:  # Basic validation
+                # Save to config
+                self.config["huggingface_token"] = token
+                save_config(self.config)
+                self._refresh_settings_menu()
+
+                rumps.notification(
+                    title="Token Saved",
+                    subtitle="",
+                    message="HuggingFace token saved to config",
+                    sound=False
+                )
+
+                # Continue to finalize
+                self._finalize_diarization_setup()
+            elif token:
+                rumps.alert(
+                    title="Invalid Token",
+                    message="The token seems too short. Please try again."
+                )
+        except Exception as e:
+            rumps.alert(
+                title="Error",
+                message=f"Could not prompt for token: {e}"
+            )
+
+    def _finalize_diarization_setup(self):
+        """Final step: enable diarization and test."""
+        response = rumps.alert(
+            title="Speaker Diarization Setup (3/3)",
+            message=(
+                "Setup complete! ✅\n\n"
+                "First use will download the diarization model (~1GB).\n"
+                "Diarization adds ~10-30 seconds processing time.\n\n"
+                "Enable speaker diarization now?"
+            ),
+            ok="Enable",
+            cancel="Later"
+        )
+
+        if response == 1:  # Enable
+            self.config["diarization_enabled"] = True
+            save_config(self.config)
+            self._refresh_settings_menu()
+
+            rumps.notification(
+                title="Speaker Diarization Enabled",
+                subtitle="",
+                message="Your next transcription will identify speakers",
+                sound=False
+            )
+
+    def _get_cache_path(self):
+        """Get the HuggingFace cache path."""
+        try:
+            from huggingface_hub import constants
+            return constants.HF_HUB_CACHE
+        except Exception:
+            return os.path.expanduser("~/.cache/huggingface/hub")
+
+    def open_cache_folder(self, _):
+        """Open the model cache folder in Finder."""
+        cache_path = self._get_cache_path()
+        if os.path.exists(cache_path):
+            subprocess.run(["open", cache_path])
+        else:
+            rumps.alert(
+                title="Cache Not Found",
+                message=f"Cache folder does not exist yet:\n{cache_path}\n\nIt will be created when you download your first model."
+            )
+
+    def open_config_file(self, _):
+        """Open the config file in default editor."""
+        config_path = os.path.expanduser("~/.parakeet_mlx_guiapi.json")
+        if os.path.exists(config_path):
+            subprocess.run(["open", config_path])
+        else:
+            rumps.alert(
+                title="Config File",
+                message=f"Config file will be created at:\n{config_path}\n\nIt's created when you first change a setting."
+            )
+
+    def view_logs(self, _):
+        """Open the log file in Console.app or default text editor."""
+        if LOG_PATH.exists():
+            # Use Console.app for better log viewing on macOS
+            subprocess.run(["open", "-a", "Console", str(LOG_PATH)])
+        else:
+            rumps.alert(
+                title="No Logs Yet",
+                message=f"Log file will be created at:\n{LOG_PATH}\n\nLogs are written when the app starts or encounters errors."
+            )
+
+    def view_last_error(self, _):
+        """Show details of the last error that occurred."""
+        if self._last_error is None:
+            rumps.alert(
+                title="No Errors",
+                message="No errors have occurred since the app started.\n\nIf you're experiencing issues, try:\n• View Logs for full history\n• Reload Model to retry loading"
+            )
+            return
+
+        error_info = self._last_error
+        rumps.alert(
+            title="Last Error Details",
+            message=(
+                f"Time: {error_info.get('time', 'Unknown')}\n"
+                f"Model: {error_info.get('model', 'Unknown')}\n\n"
+                f"Error: {error_info.get('error', 'Unknown')}\n\n"
+                f"Full traceback saved to:\n{LOG_PATH}"
+            )
+        )
+
+    def status_clicked(self, _):
+        """Handle click on status item - show error details or info."""
+        if self._last_error:
+            # Show error details with options
+            error_info = self._last_error
+            response = rumps.alert(
+                title="Model Load Error",
+                message=(
+                    f"Model: {error_info.get('model', 'Unknown')}\n\n"
+                    f"Error: {error_info.get('error', 'Unknown')[:200]}\n\n"
+                    f"Time: {error_info.get('time', 'Unknown')}\n\n"
+                    "Would you like to try reloading the model?"
+                ),
+                ok="Reload Model",
+                cancel="View Full Logs"
+            )
+            if response == 1:  # Reload
+                self.reload_model(None)
+            else:  # View logs
+                self.view_logs(None)
+        elif self.transcriber is None:
+            rumps.alert(
+                title="Loading...",
+                message="Model is still loading. Please wait."
+            )
+        else:
+            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+            model_info = self._get_model_by_id(model_name)
+            if model_info:
+                rumps.alert(
+                    title="Parakeet Ready",
+                    message=(
+                        f"Model: {model_info['name']}\n"
+                        f"Languages: {model_info.get('languages', 'Unknown')}\n"
+                        f"Accuracy: {model_info.get('wer', 'N/A')}\n\n"
+                        "Click the mic icon to start recording!"
+                    )
+                )
+
+    def reload_model(self, _):
+        """Reload the current model (useful after errors)."""
+        if self.recording or self.processing:
+            rumps.notification(
+                title="Cannot Reload",
+                subtitle="",
+                message="Please wait until current operation completes",
+                sound=False
+            )
+            return
+
+        model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+        model_short = self._get_model_short_name(model_name)
+
+        # Clear existing transcriber
+        self.transcriber = None
+        self._last_error = None
+
+        # Reset status
+        self.status_item.title = f"Reloading {model_short}..."
+
+        logger.info(f"User requested model reload: {model_name}")
+
+        # Reload in background
+        threading.Thread(target=self._init_transcriber_with_download, daemon=True).start()
+
+        rumps.notification(
+            title="Reloading Model",
+            subtitle=model_short,
+            message="Model is being reloaded...",
+            sound=False
+        )
+
+    def predownload_model(self, _):
+        """Pre-download a model with progress display in Terminal."""
+        # Build list of models not yet cached
+        uncached = []
+        for model in AVAILABLE_MODELS:
+            if not self._is_model_cached(model["id"]):
+                uncached.append(model)
+
+        if not uncached:
+            rumps.alert(
+                title="All Models Cached",
+                message="All available models are already downloaded!"
+            )
+            return
+
+        # Show selection dialog
+        model_list = "\n".join([f"  {i+1}. {m['name']} ({m['size']})" for i, m in enumerate(uncached)])
+
+        script = f'''
+        tell application "System Events"
+            display dialog "Select model to download:\\n\\n{model_list}\\n\\nEnter number (1-{len(uncached)}):" default answer "1" with title "Download Model" buttons {{"Cancel", "Download"}} default button "Download"
+            if button returned of result is "Download" then
+                return text returned of result
+            end if
+        end tell
+        '''
+
+        try:
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            choice = result.stdout.strip()
+
+            if choice and choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(uncached):
+                    model = uncached[idx]
+                    self._download_model_in_terminal(model)
+        except Exception as e:
+            rumps.alert(title="Error", message=str(e))
+
+    def _download_model_in_terminal(self, model):
+        """Download a model with visible progress in Terminal."""
+        model_id = model["id"]
+        model_name = model["name"]
+        model_size = model.get("size", "unknown size")
+        python_path = sys.executable
+
+        download_cmd = f'''
+clear
+echo "══════════════════════════════════════════════════════════════"
+echo "  Downloading: {model_name}"
+echo "══════════════════════════════════════════════════════════════"
+echo ""
+echo "Model: {model_id}"
+echo "Size: {model_size}"
+echo ""
+echo "Downloading from HuggingFace..."
+echo ""
+"{python_path}" -c "
+from huggingface_hub import snapshot_download
+import sys
+
+def progress_callback(progress):
+    pass  # HF handles its own progress bar
+
+print('Starting download...')
+try:
+    path = snapshot_download('{model_id}', local_files_only=False)
+    print(f'\\n✅ Download complete!')
+    print(f'Saved to: {{path}}')
+except Exception as e:
+    print(f'\\n❌ Download failed: {{e}}')
+    sys.exit(1)
+"
+echo ""
+echo "Press any key to close..."
+read -n 1
+'''
+
+        script = f'''
+        tell application "Terminal"
+            activate
+            do script "{download_cmd.replace('"', '\\"').replace('\n', '\\n')}"
+        end tell
+        '''
+
+        try:
+            subprocess.run(["osascript", "-e", script], check=True)
+            self.status_item.title = f"Downloading... (see Terminal)"
+        except Exception as e:
+            rumps.alert(
+                title="Could not open Terminal",
+                message=f"Error: {e}"
+            )
 
     def _populate_history_menu(self):
         """Populate the history submenu."""
@@ -283,32 +1161,92 @@ class ParakeetMenuBarApp(rumps.App):
         self._refresh_history_menu()
 
     def _init_transcriber(self):
-        """Initialize transcriber in background."""
+        """Initialize transcriber in background with progress feedback."""
+        model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+        model_short = self._get_model_short_name(model_name)
+
         try:
+            logger.info(f"Initializing transcriber with model: {model_name}")
+            model_info = self._get_model_by_id(model_name) or {}
+
+            # Check if model is cached
+            is_cached = self._is_model_cached(model_name)
+            logger.info(f"Model cached: {is_cached}")
+
+            if is_cached:
+                self.status_item.title = f"Loading {model_short}..."
+            else:
+                # Model needs to be downloaded
+                size = model_info.get("size", "~1GB")
+                self.status_item.title = f"Downloading {model_short}..."
+
+                if self.config.get("show_notifications", True):
+                    rumps.notification(
+                        title="Downloading Model",
+                        subtitle=model_short,
+                        message=f"First-time download: {size}\nThis may take a few minutes...",
+                        sound=False
+                    )
+
+            # Import and load model
+            logger.info("Importing AudioTranscriber...")
             from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
 
-            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-            self.status_item.title = f"Loading {self._get_model_short_name(model_name)}..."
+            logger.info(f"Creating AudioTranscriber with model: {model_name}")
+            logger.info("This may take a moment for first load...")
 
-            self.transcriber = AudioTranscriber(model_name=model_name)
+            try:
+                self.transcriber = AudioTranscriber(model_name=model_name)
+                logger.info("AudioTranscriber created successfully")
+            except Exception as load_error:
+                logger.error(f"AudioTranscriber creation failed: {load_error}")
+                logger.error(f"Model ID: {model_name}")
+                raise
 
-            self.status_item.title = f"Ready: {self._get_model_short_name(model_name)}"
+            logger.info("Model loaded successfully")
+            self.status_item.title = f"Ready: {model_short}"
+            self._last_error = None
 
             if self.config.get("show_notifications", True):
+                msg = "Model loaded from cache" if is_cached else "Download complete!"
                 rumps.notification(
                     title="Parakeet Ready",
-                    subtitle=self._get_model_short_name(model_name),
-                    message="Click the mic icon to record",
+                    subtitle=model_short,
+                    message=f"{msg}\nClick the mic icon to record",
                     sound=False
                 )
+
         except Exception as e:
-            self.status_item.title = "Error: Model failed to load"
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            logger.error(f"Failed to load model: {error_msg}")
+            logger.error(f"Traceback:\n{error_trace}")
+
+            self._last_error = {
+                "model": model_name,
+                "error": error_msg,
+                "traceback": error_trace,
+                "time": datetime.now().isoformat()
+            }
+
+            self.status_item.title = "⚠️ Error - Click for options"
             rumps.notification(
                 title="Parakeet Error",
-                subtitle="Failed to load model",
-                message=str(e)[:100],
+                subtitle=f"Failed to load {model_short}",
+                message=f"{error_msg[:80]}...\nCheck Settings > View Logs",
                 sound=True
             )
+
+    def _is_model_cached(self, model_name):
+        """Check if a model is already downloaded/cached."""
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            # Try to find the config file in cache
+            cached = try_to_load_from_cache(model_name, "config.json")
+            return cached is not None
+        except Exception:
+            # If we can't check, assume not cached
+            return False
 
     def select_model(self, model):
         """Change the transcription model."""
@@ -321,6 +1259,34 @@ class ParakeetMenuBarApp(rumps.App):
             )
             return
 
+        # Check if model needs to be downloaded
+        is_cached = self._is_model_cached(model["id"])
+
+        if not is_cached:
+            # Model needs download - ask user and show progress in Terminal
+            response = rumps.alert(
+                title="Download Required",
+                message=(
+                    f"Model: {model['name']}\n"
+                    f"Size: {model.get('size', 'unknown')}\n\n"
+                    "This model needs to be downloaded first.\n"
+                    "Download progress will be shown in Terminal."
+                ),
+                ok="Download",
+                cancel="Cancel"
+            )
+
+            if response != 1:  # User cancelled
+                return
+
+            # Download in Terminal with progress, then load
+            self._download_and_load_model(model)
+        else:
+            # Model is cached, load directly
+            self._switch_to_model(model)
+
+    def _switch_to_model(self, model):
+        """Switch to an already-cached model."""
         # Update config
         self.config["model_name"] = model["id"]
         save_config(self.config)
@@ -330,15 +1296,100 @@ class ParakeetMenuBarApp(rumps.App):
 
         # Reload transcriber
         self.transcriber = None
-        self.status_item.title = f"Switching to {model['name']}..."
+        self.status_item.title = f"Loading {model['name']}..."
         threading.Thread(target=self._init_transcriber, daemon=True).start()
 
         rumps.notification(
-            title="Model Changed",
+            title="Loading Model",
             subtitle=model["name"],
-            message=f"Loading {model['description']}...",
+            message="Loading from cache...",
             sound=False
         )
+
+    def _download_and_load_model(self, model):
+        """Download a model in Terminal with progress, then load it."""
+        model_id = model["id"]
+        model_name = model["name"]
+        model_size = model.get("size", "unknown size")
+        python_path = sys.executable
+
+        # Update config now so it loads this model after download
+        self.config["model_name"] = model_id
+        save_config(self.config)
+        self._refresh_model_menu()
+
+        download_cmd = f'''
+clear
+echo "══════════════════════════════════════════════════════════════"
+echo "  Downloading: {model_name}"
+echo "══════════════════════════════════════════════════════════════"
+echo ""
+echo "Model: {model_id}"
+echo "Size: {model_size}"
+echo ""
+"{python_path}" -c "
+from huggingface_hub import snapshot_download
+import sys
+
+print('Downloading from HuggingFace...')
+print('(Progress bar will appear below)')
+print('')
+
+try:
+    path = snapshot_download('{model_id}', local_files_only=False)
+    print('')
+    print('✅ Download complete!')
+    print(f'Saved to: {{path}}')
+    print('')
+    print('The model will now load in Parakeet.')
+except Exception as e:
+    print(f'')
+    print(f'❌ Download failed: {{e}}')
+    sys.exit(1)
+"
+echo ""
+echo "You can close this window."
+echo "Press any key to close..."
+read -n 1
+'''
+
+        script = f'''
+        tell application "Terminal"
+            activate
+            do script "{download_cmd.replace('"', '\\"').replace('\n', '\\n')}"
+        end tell
+        '''
+
+        try:
+            subprocess.run(["osascript", "-e", script], check=True)
+            self.status_item.title = f"Downloading... (see Terminal)"
+
+            # Start a background thread to wait for download and then load
+            def wait_and_load():
+                # Poll until model is cached
+                for _ in range(600):  # Max 10 minutes
+                    time.sleep(1)
+                    if self._is_model_cached(model_id):
+                        # Model downloaded, now load it
+                        self.status_item.title = f"Loading {model_name}..."
+                        self._init_transcriber()
+                        return
+                # Timeout
+                self.status_item.title = "Download timeout"
+                rumps.notification(
+                    title="Download Timeout",
+                    subtitle="",
+                    message="Model download took too long. Try again.",
+                    sound=True
+                )
+
+            threading.Thread(target=wait_and_load, daemon=True).start()
+
+        except Exception as e:
+            rumps.alert(
+                title="Could not open Terminal",
+                message=f"Error: {e}"
+            )
 
     def set_chunk_duration(self, duration):
         """Set chunk duration for long audio processing."""
@@ -387,7 +1438,9 @@ class ParakeetMenuBarApp(rumps.App):
 
     def toggle_recording(self, _):
         """Toggle recording state."""
+        logger.info(f"toggle_recording called - recording={self.recording}, processing={self.processing}")
         if self.processing:
+            logger.info("Still processing, ignoring toggle")
             if self.config.get("show_notifications", True):
                 rumps.notification(
                     title="Parakeet",
@@ -398,8 +1451,10 @@ class ParakeetMenuBarApp(rumps.App):
             return
 
         if not self.recording:
+            logger.info("Starting recording...")
             self.start_recording()
         else:
+            logger.info("Stopping recording...")
             self.stop_recording()
 
     def start_recording(self):
@@ -408,6 +1463,7 @@ class ParakeetMenuBarApp(rumps.App):
             import sounddevice as sd
             import numpy as np
 
+            logger.info("start_recording: Initializing...")
             self.recording = True
             self._recording_start_time = time.time()
             self.title = self.ICON_RECORDING
@@ -419,10 +1475,13 @@ class ParakeetMenuBarApp(rumps.App):
             self.channels = 1
 
             def audio_callback(indata, frames, time_info, status):
+                if status:
+                    logger.warning(f"Audio callback status: {status}")
                 if self.recording:
                     self._audio_data.append(indata.copy())
 
             # Start recording stream
+            logger.info(f"start_recording: Creating InputStream (rate={self.sample_rate}, channels={self.channels})")
             self._stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
@@ -430,6 +1489,7 @@ class ParakeetMenuBarApp(rumps.App):
                 callback=audio_callback
             )
             self._stream.start()
+            logger.info("start_recording: Stream started successfully")
 
             # Start timer to update title
             self._start_recording_timer()
@@ -443,6 +1503,7 @@ class ParakeetMenuBarApp(rumps.App):
                 )
 
         except Exception as e:
+            logger.error(f"start_recording: Error - {e}", exc_info=True)
             self.recording = False
             self.title = self.ICON_ERROR
             self.record_button.title = "Start Recording"
@@ -473,12 +1534,15 @@ class ParakeetMenuBarApp(rumps.App):
         import numpy as np
         from scipy.io import wavfile
 
+        logger.info("stop_recording: Stopping stream...")
         self.recording = False
         if self._stream:
             self._stream.stop()
             self._stream.close()
+            logger.info("stop_recording: Stream closed")
 
         if not self._audio_data:
+            logger.warning("stop_recording: No audio data captured")
             self.title = self.ICON_IDLE
             self.record_button.title = "Start Recording"
             rumps.notification(
@@ -491,6 +1555,7 @@ class ParakeetMenuBarApp(rumps.App):
 
         # Calculate duration
         recording_duration = time.time() - self._recording_start_time
+        logger.info(f"stop_recording: Recorded {recording_duration:.1f}s, {len(self._audio_data)} chunks")
 
         # Update UI for processing
         self.processing = True
@@ -499,6 +1564,7 @@ class ParakeetMenuBarApp(rumps.App):
         self.status_item.title = "Transcribing..."
 
         # Process in background thread
+        logger.info("stop_recording: Starting processing thread...")
         threading.Thread(
             target=self._process_audio,
             args=(recording_duration,),
@@ -506,13 +1572,17 @@ class ParakeetMenuBarApp(rumps.App):
         ).start()
 
     def _process_audio(self, recording_duration):
-        """Process recorded audio and transcribe."""
+        """Process recorded audio and transcribe (with optional diarization)."""
         import numpy as np
         from scipy.io import wavfile
+
+        process_start = time.time()
+        logger.info(f"_process_audio: Starting processing for {recording_duration:.1f}s recording")
 
         try:
             # Concatenate audio data
             audio_data = np.concatenate(self._audio_data, axis=0)
+            logger.info(f"_process_audio: Audio data shape: {audio_data.shape}")
 
             # Convert to int16 for WAV
             audio_int16 = (audio_data * 32767).astype(np.int16)
@@ -537,30 +1607,110 @@ class ParakeetMenuBarApp(rumps.App):
                 raise Exception("Model not loaded. Please wait and try again.")
 
             # Transcribe
+            logger.info("_process_audio: Starting transcription...")
+            transcribe_start = time.time()
             chunk_duration = self.config.get("default_chunk_duration", 120)
             df, full_text = self.transcriber.transcribe(
                 temp_path,
                 chunk_duration=chunk_duration
             )
+            transcribe_time = time.time() - transcribe_start
+            logger.info(f"_process_audio: Transcription complete in {transcribe_time:.2f}s")
+
+            # Handle None result
+            if full_text is None:
+                logger.warning("_process_audio: Transcription returned None")
+                full_text = ""
+            logger.info(f"_process_audio: Result: {len(full_text)} chars")
+
+            # === Speaker Diarization (optional) ===
+            output_text = full_text
+            num_speakers = 0
+
+            diarization_enabled = self.config.get("diarization_enabled", False)
+            logger.info(f"_process_audio: Diarization enabled={diarization_enabled}, df is None={df is None}")
+
+            if diarization_enabled and df is not None:
+                try:
+                    logger.info("_process_audio: Starting speaker diarization...")
+                    self.status_item.title = "Identifying speakers..."
+                    from parakeet_mlx_guiapi.diarization import SpeakerDiarizer
+
+                    # Initialize diarizer if needed
+                    if not hasattr(self, '_diarizer') or self._diarizer is None:
+                        self._diarizer = SpeakerDiarizer()
+
+                    # Get speaker count setting (0 = auto-detect)
+                    configured_speakers = self.config.get("diarization_num_speakers", 0)
+
+                    # Run diarization with speaker hint if configured
+                    if configured_speakers > 0:
+                        diarization = self._diarizer.diarize(
+                            temp_path,
+                            num_speakers=configured_speakers
+                        )
+                    else:
+                        diarization = self._diarizer.diarize(temp_path)
+                    num_speakers = diarization.num_speakers
+
+                    logger.info(f"_process_audio: Diarization complete, found {num_speakers} speakers")
+
+                    # Convert DataFrame to list of dicts for merging
+                    segments = df.to_dict('records')
+
+                    # Format with speaker labels (markdown format)
+                    output_text = diarization.format_transcript_markdown(segments)
+                    logger.info(f"_process_audio: Formatted transcript with speaker labels")
+
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"_process_audio: Diarization failed - {e}", exc_info=True)
+
+                    # Provide helpful error messages for common issues
+                    if "403" in error_msg or "restricted" in error_msg or "authorized" in error_msg:
+                        rumps.notification(
+                            title="Diarization Access Denied",
+                            subtitle="Model license not accepted",
+                            message="Visit huggingface.co/pyannote to accept the model license",
+                            sound=True
+                        )
+                    elif "401" in error_msg or "token" in error_msg.lower():
+                        rumps.notification(
+                            title="Diarization Auth Error",
+                            subtitle="Invalid HuggingFace token",
+                            message="Check your token in Settings > Speaker Diarization",
+                            sound=True
+                        )
+                    else:
+                        rumps.notification(
+                            title="Diarization Failed",
+                            subtitle="",
+                            message=error_msg[:80],
+                            sound=True
+                        )
+
+                    # Fall back to plain transcription
+                    output_text = full_text
 
             # Clean up temp file
             os.remove(temp_path)
 
-            if full_text:
+            if output_text:
                 # Copy to clipboard if enabled
                 if self.config.get("auto_copy_clipboard", True):
-                    pyperclip.copy(full_text)
+                    pyperclip.copy(output_text)
 
                 # Add to history
-                self._add_to_history(full_text, recording_duration)
+                self._add_to_history(output_text, recording_duration)
 
                 # Show notification with preview
                 if self.config.get("show_notifications", True):
-                    preview = full_text[:80] + "..." if len(full_text) > 80 else full_text
+                    preview = output_text[:80] + "..." if len(output_text) > 80 else output_text
                     copied_msg = " - Copied!" if self.config.get("auto_copy_clipboard", True) else ""
+                    speaker_info = f" ({num_speakers} speakers)" if num_speakers > 0 else ""
                     rumps.notification(
                         title=f"Transcription Complete{copied_msg}",
-                        subtitle=f"{recording_duration:.1f}s of audio",
+                        subtitle=f"{recording_duration:.1f}s of audio{speaker_info}",
                         message=preview,
                         sound=True
                     )
@@ -579,6 +1729,7 @@ class ParakeetMenuBarApp(rumps.App):
                 self.title = self.ICON_IDLE
 
         except Exception as e:
+            logger.error(f"_process_audio: Error - {e}", exc_info=True)
             rumps.notification(
                 title="Transcription Error",
                 subtitle="",
@@ -589,6 +1740,8 @@ class ParakeetMenuBarApp(rumps.App):
             threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
         finally:
             # Reset UI
+            total_time = time.time() - process_start
+            logger.info(f"_process_audio: Complete. Total processing time: {total_time:.2f}s")
             self.processing = False
             self.record_button.title = "Start Recording"
             model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
@@ -596,9 +1749,20 @@ class ParakeetMenuBarApp(rumps.App):
 
     def show_about(self, _):
         """Show about dialog."""
-        model_name = self._get_model_short_name(
-            self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-        )
+        current_model_id = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+        current = self._get_model_by_id(current_model_id)
+
+        if current:
+            model_info = (
+                f"Current model: {current['name']}\n"
+                f"  Languages: {current.get('languages', 'Unknown')}\n"
+                f"  Accuracy (WER): {current.get('wer', 'N/A')}\n"
+                f"  Speed: {current.get('speed', 'N/A')}\n"
+                f"  Size: {current.get('size', 'Unknown')}"
+            )
+        else:
+            model_info = f"Current model: {current_model_id}"
+
         rumps.alert(
             title="Parakeet Voice-to-Clipboard",
             message=(
@@ -607,8 +1771,13 @@ class ParakeetMenuBarApp(rumps.App):
                 "• Click the mic icon to start recording\n"
                 "• Click again to stop and transcribe\n"
                 "• Transcription is copied to clipboard\n\n"
-                f"Current model: {model_name}\n\n"
-                "Powered by parakeet-mlx\n"
+                f"{model_info}\n\n"
+                "Model Types:\n"
+                "• TDT: Best accuracy (Token-Duration Transducer)\n"
+                "• CTC: Fastest (Connectionist Temporal Classification)\n"
+                "• Hybrid: Both decoders, flexible\n"
+                "• RNNT: Streaming capable\n\n"
+                "Powered by NVIDIA Parakeet + MLX\n"
                 "https://github.com/senstella/parakeet-mlx"
             )
         )
@@ -625,6 +1794,18 @@ class ParakeetMenuBarApp(rumps.App):
 
 def main():
     """Run the menu bar app."""
+    import platform
+
+    # Log startup info for debugging
+    logger.info("=" * 60)
+    logger.info("Parakeet Menu Bar App Starting")
+    logger.info("=" * 60)
+    logger.info(f"Python: {sys.version}")
+    logger.info(f"Platform: {platform.platform()}")
+    logger.info(f"Machine: {platform.machine()}")
+    logger.info(f"Log file: {LOG_PATH}")
+    logger.info("-" * 60)
+
     ParakeetMenuBarApp().run()
 
 

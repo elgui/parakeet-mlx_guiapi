@@ -1,3 +1,40 @@
+Metadata-Version: 2.4
+Name: parakeet_mlx_guiapi
+Version: 0.1.0
+Summary: GUI and API for Parakeet-MLX speech-to-text library
+Home-page: https://github.com/yourusername/parakeet-mlx_guiapi
+Author: MLX Community
+Author-email: info@example.com
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: MacOS :: MacOS X
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: parakeet-mlx>=0.3.0
+Requires-Dist: flask>=2.3.0
+Requires-Dist: flask-cors>=4.0.0
+Requires-Dist: gradio>=4.19.0
+Requires-Dist: pydub>=0.25.0
+Requires-Dist: sounddevice>=0.4.6
+Requires-Dist: pyperclip>=1.8.0
+Requires-Dist: scipy>=1.10.0
+Requires-Dist: pyannote.audio>=3.1.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: matplotlib>=3.7.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: rumps>=0.4.0
+Requires-Dist: py2app>=0.28.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
 # Parakeet-MLX GUI and API 🦜✨
 
 A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella/parakeet-mlx), Nvidia's ASR (Automatic Speech Recognition) models optimized for Apple Silicon using MLX.
@@ -30,8 +67,6 @@ A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella
 
 ## Quick Start 🚀
 
-### Option A: Menu Bar App (Recommended for Daily Use)
-
 ```bash
 # 1. Install ffmpeg (if not already installed)
 brew install ffmpeg
@@ -40,31 +75,19 @@ brew install ffmpeg
 git clone https://github.com/yourusername/parakeet-mlx_guiapi.git
 cd parakeet-mlx_guiapi
 
-# 3. Create virtual environment and install
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# 3. Create virtual environment and install dependencies
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-# 4. Install the menu bar app
-./install_menubar_app.sh
-```
-
-This installs **Parakeet.app** to `/Applications`. Launch it from:
-- **Spotlight**: Cmd+Space, type "Parakeet"
-- **Menu Bar**: Click the 🎤 icon
-- **Terminal**: `open /Applications/Parakeet.app`
-
-### Option B: Web GUI + API Server
-
-```bash
-# After steps 1-3 above, start the server:
+# 4. Start the server
 python run.py
 ```
 
+That's it! The first run will download the model (~600MB).
+
 - **Web GUI**: http://localhost:5001
 - **REST API**: http://localhost:5000/api/
-
-The first run will download the model (~1.2GB).
 
 ## Usage ▶️
 
@@ -215,16 +238,10 @@ python client.py --mic --output-file transcription.txt
 
 #### Installable Commands
 
-After installing with pip (`pip install -e .`), these commands are available **when the virtual environment is activated**:
-
-```bash
-source .venv/bin/activate  # Activate first!
-parakeet-server   # Start the web GUI + API server
-parakeet-client   # Run the CLI client
-parakeet-menubar  # Launch the menu bar app (dev mode)
-```
-
-**Tip:** For daily use without activating venv, install the Parakeet.app instead (see below).
+After installing with pip (`pip install -e .`), you can use:
+- `parakeet-server` - Start the server
+- `parakeet-client` - Run the CLI client
+- `parakeet-menubar` - Launch the menu bar app
 
 ### Menu Bar App (Voice-to-Clipboard) 📋
 
@@ -373,17 +390,12 @@ osascript -e 'tell application "System Events" to make login item at end with pr
 For development or testing without building the app:
 
 ```bash
-# Activate the virtual environment first
-source .venv/bin/activate
-
-# Option 1: Run directly
+# Run directly
 python menubar_app.py
 
-# Option 2: Use the installed command (requires pip install -e .)
+# Or after pip install -e .
 parakeet-menubar
 ```
-
-**Note:** These commands require the virtual environment to be activated. For daily use, install the Parakeet.app which works without activation.
 
 #### Troubleshooting
 
