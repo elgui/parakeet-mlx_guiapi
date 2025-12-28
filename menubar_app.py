@@ -55,6 +55,7 @@ import rumps
 import pyperclip
 import subprocess
 import webbrowser
+import signal
 
 # Setup logging to file
 LOG_PATH = Path.home() / ".parakeet_mlx.log"
@@ -213,6 +214,11 @@ class ParakeetMenuBarApp(rumps.App):
         self._recording_start_time = None
         self._timer = None
 
+        # Server control
+        self._server_process = None
+        self._server_port = 5000
+        self._gradio_port = 5001
+
         # Load config
         self.config = get_config()
 
@@ -250,43 +256,128 @@ class ParakeetMenuBarApp(rumps.App):
 
     def _setup_menu(self):
         """Set up the initial menu structure."""
+        # === Primary Actions ===
         # Record button (main action)
         self.record_button = rumps.MenuItem(
-            "Start Recording",
+            "🎤 Start Recording",
             callback=self.toggle_recording
         )
 
-        # Status display (clickable for error details)
+        # Cancel recording button (hidden by default, shown during recording)
+        self.cancel_button = rumps.MenuItem(
+            "✖ Cancel Recording",
+            callback=self.cancel_recording
+        )
+
+        # Transcribe file option
+        self.transcribe_file_button = rumps.MenuItem(
+            "📁 Transcribe File...",
+            callback=self.transcribe_file
+        )
+
+        # === Status ===
         self.status_item = rumps.MenuItem("Status: Loading model...", callback=self.status_clicked)
 
-        # Model selection submenu - build items directly
-        self.model_menu = rumps.MenuItem("Model")
+        # === Server Controls ===
+        self.server_menu = rumps.MenuItem("🌐 Server")
+        self._populate_server_menu()
+
+        # === Model Selection ===
+        self.model_menu = rumps.MenuItem("🤖 Model")
         self._populate_model_menu()
 
-        # Settings submenu
-        self.settings_menu = rumps.MenuItem("Settings")
+        # === Settings ===
+        self.settings_menu = rumps.MenuItem("⚙️ Settings")
         self._populate_settings_menu()
 
-        # History submenu
-        self.history_menu = rumps.MenuItem("History")
+        # === History ===
+        self.history_menu = rumps.MenuItem("📜 History")
         self._populate_history_menu()
 
-        # About and Quit
-        about_item = rumps.MenuItem("About Parakeet", callback=self.show_about)
-        quit_item = rumps.MenuItem("Quit Parakeet", callback=self.quit_app)
+        # === About and Quit ===
+        about_item = rumps.MenuItem("ℹ️ About Parakeet", callback=self.show_about)
+        help_item = rumps.MenuItem("❓ Help", callback=self.show_help)
+        quit_item = rumps.MenuItem("⏻ Quit Parakeet", callback=self.quit_app)
 
         self.menu = [
             self.record_button,
+            self.cancel_button,
+            self.transcribe_file_button,
             None,  # Separator
             self.status_item,
             None,
+            self.server_menu,
             self.model_menu,
             self.settings_menu,
             self.history_menu,
             None,
+            help_item,
             about_item,
             quit_item,
         ]
+
+        # Hide cancel button initially
+        self.cancel_button.set_callback(None)  # Disable it initially
+
+    def _populate_server_menu(self):
+        """Populate the server control menu."""
+        # Server status
+        if self._server_process and self._server_process.poll() is None:
+            status = "● Server Running"
+            self.server_menu.add(rumps.MenuItem(f"✅ {status}"))
+        else:
+            status = "○ Server Stopped"
+            self.server_menu.add(rumps.MenuItem(f"⚪ {status}"))
+
+        self.server_menu.add(None)
+
+        # Start/Stop buttons
+        if self._server_process and self._server_process.poll() is None:
+            self.server_menu.add(rumps.MenuItem("⏹ Stop Server", callback=self.stop_server))
+            self.server_menu.add(rumps.MenuItem("🔄 Restart Server", callback=self.restart_server))
+        else:
+            self.server_menu.add(rumps.MenuItem("▶️ Start Server", callback=self.start_server))
+
+        self.server_menu.add(None)
+
+        # Open Web UI
+        self.server_menu.add(rumps.MenuItem("🌐 Open Web UI", callback=self.open_web_ui))
+        self.server_menu.add(rumps.MenuItem("📊 Open API Docs", callback=self.open_api_docs))
+
+        self.server_menu.add(None)
+
+        # Server config submenu
+        config_menu = rumps.MenuItem("⚙️ Server Config")
+
+        # Port configuration
+        port_menu = rumps.MenuItem("API Port")
+        current_port = self.config.get("server_port", 5000)
+        for port in [5000, 8000, 8080, 3000]:
+            title = f"{'✓ ' if port == current_port else ''}{port}"
+            port_menu.add(rumps.MenuItem(title, callback=lambda _, p=port: self.set_server_port(p)))
+        config_menu.add(port_menu)
+
+        # Gradio port
+        gradio_port_menu = rumps.MenuItem("Gradio Port")
+        current_gradio = self.config.get("gradio_port", 5001)
+        for port in [5001, 7860, 8001]:
+            title = f"{'✓ ' if port == current_gradio else ''}{port}"
+            gradio_port_menu.add(rumps.MenuItem(title, callback=lambda _, p=port: self.set_gradio_port(p)))
+        config_menu.add(gradio_port_menu)
+
+        # Debug mode toggle
+        debug_mode = self.config.get("server_debug", False)
+        debug_title = f"{'✓ ' if debug_mode else ''}Debug Mode"
+        config_menu.add(rumps.MenuItem(debug_title, callback=self.toggle_debug_mode))
+
+        self.server_menu.add(config_menu)
+
+    def _refresh_server_menu(self):
+        """Refresh the server menu."""
+        keys = list(self.server_menu.keys())
+        for key in keys:
+            del self.server_menu[key]
+        self._populate_server_menu()
 
     def _populate_model_menu(self):
         """Populate the model selection menu organized by category."""
@@ -1468,6 +1559,7 @@ read -n 1
             self._recording_start_time = time.time()
             self.title = self.ICON_RECORDING
             self.record_button.title = "⏹ Stop Recording"
+            self.cancel_button.set_callback(self.cancel_recording)  # Enable cancel button
             self._audio_data = []
 
             # Recording parameters
@@ -1506,7 +1598,8 @@ read -n 1
             logger.error(f"start_recording: Error - {e}", exc_info=True)
             self.recording = False
             self.title = self.ICON_ERROR
-            self.record_button.title = "Start Recording"
+            self.record_button.title = "🎤 Start Recording"
+            self.cancel_button.set_callback(None)  # Disable cancel button
             rumps.notification(
                 title="Recording Error",
                 subtitle="",
@@ -1536,6 +1629,7 @@ read -n 1
 
         logger.info("stop_recording: Stopping stream...")
         self.recording = False
+        self.cancel_button.set_callback(None)  # Disable cancel button
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -1544,7 +1638,7 @@ read -n 1
         if not self._audio_data:
             logger.warning("stop_recording: No audio data captured")
             self.title = self.ICON_IDLE
-            self.record_button.title = "Start Recording"
+            self.record_button.title = "🎤 Start Recording"
             rumps.notification(
                 title="No Audio",
                 subtitle="",
@@ -1743,9 +1837,394 @@ read -n 1
             total_time = time.time() - process_start
             logger.info(f"_process_audio: Complete. Total processing time: {total_time:.2f}s")
             self.processing = False
-            self.record_button.title = "Start Recording"
+            self.record_button.title = "🎤 Start Recording"
             model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
             self.status_item.title = f"Ready: {self._get_model_short_name(model_name)}"
+
+    # === Server Control Methods ===
+
+    def start_server(self, _):
+        """Start the Flask + Gradio server."""
+        if self._server_process and self._server_process.poll() is None:
+            rumps.notification(
+                title="Server Already Running",
+                subtitle="",
+                message=f"Server is already running on port {self._server_port}",
+                sound=False
+            )
+            return
+
+        try:
+            # Get config
+            port = self.config.get("server_port", 5000)
+            gradio_port = self.config.get("gradio_port", 5001)
+            debug = self.config.get("server_debug", False)
+            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+
+            # Build command
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
+            cmd = [
+                sys.executable, script_path,
+                "--host", "127.0.0.1",
+                "--port", str(port),
+                "--model", model_name
+            ]
+            if debug:
+                cmd.append("--debug")
+
+            # Set environment variables for Gradio port
+            env = os.environ.copy()
+            env["GRADIO_SERVER_PORT"] = str(gradio_port)
+
+            logger.info(f"Starting server: {' '.join(cmd)}")
+
+            # Start server process
+            self._server_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                start_new_session=True  # Allow it to run independently
+            )
+            self._server_port = port
+            self._gradio_port = gradio_port
+
+            # Refresh menu
+            self._refresh_server_menu()
+
+            if self.config.get("show_notifications", True):
+                rumps.notification(
+                    title="Server Started",
+                    subtitle=f"Port {port}",
+                    message=f"API: http://127.0.0.1:{port}\nWeb UI: http://127.0.0.1:{gradio_port}",
+                    sound=False
+                )
+
+            logger.info(f"Server started on port {port}")
+
+        except Exception as e:
+            logger.error(f"Failed to start server: {e}", exc_info=True)
+            rumps.notification(
+                title="Server Error",
+                subtitle="Failed to start",
+                message=str(e)[:100],
+                sound=True
+            )
+
+    def stop_server(self, _):
+        """Stop the running server."""
+        if not self._server_process or self._server_process.poll() is not None:
+            rumps.notification(
+                title="Server Not Running",
+                subtitle="",
+                message="No server is currently running",
+                sound=False
+            )
+            return
+
+        try:
+            # Send SIGTERM for graceful shutdown
+            os.killpg(os.getpgid(self._server_process.pid), signal.SIGTERM)
+            self._server_process.wait(timeout=5)
+            logger.info("Server stopped gracefully")
+        except subprocess.TimeoutExpired:
+            # Force kill if it doesn't stop
+            os.killpg(os.getpgid(self._server_process.pid), signal.SIGKILL)
+            logger.warning("Server force-killed after timeout")
+        except Exception as e:
+            logger.error(f"Error stopping server: {e}")
+
+        self._server_process = None
+        self._refresh_server_menu()
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Server Stopped",
+                subtitle="",
+                message="The server has been stopped",
+                sound=False
+            )
+
+    def restart_server(self, _):
+        """Restart the server."""
+        self.stop_server(None)
+        time.sleep(1)
+        self.start_server(None)
+
+    def open_web_ui(self, _):
+        """Open the Gradio web UI in browser."""
+        port = self.config.get("gradio_port", 5001)
+        webbrowser.open(f"http://127.0.0.1:{port}")
+
+    def open_api_docs(self, _):
+        """Open the API documentation."""
+        port = self.config.get("server_port", 5000)
+        # Show API endpoints info
+        rumps.alert(
+            title="API Documentation",
+            message=(
+                f"Base URL: http://127.0.0.1:{port}\n\n"
+                "Endpoints:\n"
+                "• POST /api/transcribe - Transcribe audio file\n"
+                "• POST /api/segment - Extract audio segment\n"
+                "• GET /api/models - List available models\n\n"
+                "Example:\n"
+                f"curl -X POST -F 'file=@audio.mp3' http://127.0.0.1:{port}/api/transcribe"
+            )
+        )
+
+    def set_server_port(self, port):
+        """Set the server API port."""
+        self.config["server_port"] = port
+        save_config(self.config)
+        self._refresh_server_menu()
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Server Port Updated",
+                subtitle="",
+                message=f"API port set to {port}. Restart server to apply.",
+                sound=False
+            )
+
+    def set_gradio_port(self, port):
+        """Set the Gradio web UI port."""
+        self.config["gradio_port"] = port
+        save_config(self.config)
+        self._refresh_server_menu()
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Gradio Port Updated",
+                subtitle="",
+                message=f"Web UI port set to {port}. Restart server to apply.",
+                sound=False
+            )
+
+    def toggle_debug_mode(self, _):
+        """Toggle server debug mode."""
+        current = self.config.get("server_debug", False)
+        self.config["server_debug"] = not current
+        save_config(self.config)
+        self._refresh_server_menu()
+
+    # === Cancel Recording ===
+
+    def cancel_recording(self, _):
+        """Cancel the current recording without processing."""
+        if not self.recording:
+            return
+
+        logger.info("Recording cancelled by user")
+        self.recording = False
+
+        # Stop the audio stream
+        if self._stream:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                logger.warning(f"Error closing stream: {e}")
+            self._stream = None
+
+        # Clear audio data
+        self._audio_data = []
+
+        # Reset UI
+        self.title = self.ICON_IDLE
+        self.record_button.title = "🎤 Start Recording"
+        self.cancel_button.set_callback(None)  # Disable cancel button
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Recording Cancelled",
+                subtitle="",
+                message="Recording was cancelled",
+                sound=False
+            )
+
+    # === Transcribe File ===
+
+    def transcribe_file(self, _):
+        """Open file picker and transcribe selected audio file."""
+        if self.recording or self.processing:
+            rumps.notification(
+                title="Busy",
+                subtitle="",
+                message="Please wait for current operation to complete",
+                sound=False
+            )
+            return
+
+        # Use AppleScript to open file picker
+        script = '''
+        set theFile to choose file with prompt "Select an audio file to transcribe:" of type {"public.audio", "com.apple.m4a-audio", "public.mp3", "com.microsoft.waveform-audio"}
+        return POSIX path of theFile
+        '''
+
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True
+            )
+
+            file_path = result.stdout.strip()
+
+            if file_path and os.path.exists(file_path):
+                logger.info(f"Transcribing file: {file_path}")
+                self._transcribe_file_path(file_path)
+            elif result.returncode != 0:
+                # User cancelled the dialog
+                pass
+
+        except Exception as e:
+            logger.error(f"File picker error: {e}", exc_info=True)
+            rumps.alert(
+                title="Error",
+                message=f"Could not open file picker: {e}"
+            )
+
+    def _transcribe_file_path(self, file_path):
+        """Transcribe an audio file at the given path."""
+        self.processing = True
+        self.title = self.ICON_PROCESSING
+        self.status_item.title = "Transcribing file..."
+
+        def do_transcribe():
+            try:
+                # Wait for transcriber if needed
+                wait_count = 0
+                while self.transcriber is None and wait_count < 60:
+                    time.sleep(0.5)
+                    wait_count += 1
+
+                if self.transcriber is None:
+                    raise Exception("Model not loaded. Please wait and try again.")
+
+                # Get file info
+                file_name = os.path.basename(file_path)
+                from pydub import AudioSegment
+                audio = AudioSegment.from_file(file_path)
+                duration = audio.duration_seconds
+
+                logger.info(f"Transcribing: {file_name} ({duration:.1f}s)")
+
+                # Transcribe
+                chunk_duration = self.config.get("default_chunk_duration", 120)
+                df, full_text = self.transcriber.transcribe(
+                    file_path,
+                    chunk_duration=chunk_duration
+                )
+
+                if full_text is None:
+                    full_text = ""
+
+                # Handle diarization if enabled
+                output_text = full_text
+                num_speakers = 0
+
+                if self.config.get("diarization_enabled", False) and df is not None:
+                    try:
+                        self.status_item.title = "Identifying speakers..."
+                        from parakeet_mlx_guiapi.diarization import SpeakerDiarizer
+
+                        if not hasattr(self, '_diarizer') or self._diarizer is None:
+                            self._diarizer = SpeakerDiarizer()
+
+                        configured_speakers = self.config.get("diarization_num_speakers", 0)
+
+                        if configured_speakers > 0:
+                            diarization = self._diarizer.diarize(
+                                file_path,
+                                num_speakers=configured_speakers
+                            )
+                        else:
+                            diarization = self._diarizer.diarize(file_path)
+
+                        num_speakers = diarization.num_speakers
+                        segments = df.to_dict('records')
+                        output_text = diarization.format_transcript_markdown(segments)
+
+                    except Exception as e:
+                        logger.error(f"Diarization failed: {e}")
+                        output_text = full_text
+
+                if output_text:
+                    # Copy to clipboard if enabled
+                    if self.config.get("auto_copy_clipboard", True):
+                        pyperclip.copy(output_text)
+
+                    # Add to history
+                    self._add_to_history(output_text, duration)
+
+                    # Show notification
+                    if self.config.get("show_notifications", True):
+                        preview = output_text[:80] + "..." if len(output_text) > 80 else output_text
+                        copied_msg = " - Copied!" if self.config.get("auto_copy_clipboard", True) else ""
+                        speaker_info = f" ({num_speakers} speakers)" if num_speakers > 0 else ""
+                        rumps.notification(
+                            title=f"Transcription Complete{copied_msg}",
+                            subtitle=f"{file_name}{speaker_info}",
+                            message=preview,
+                            sound=True
+                        )
+
+                    self.title = self.ICON_READY
+                    threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+                else:
+                    rumps.notification(
+                        title="Transcription Empty",
+                        subtitle="",
+                        message="No speech detected in the audio file",
+                        sound=True
+                    )
+                    self.title = self.ICON_IDLE
+
+            except Exception as e:
+                logger.error(f"File transcription error: {e}", exc_info=True)
+                rumps.notification(
+                    title="Transcription Error",
+                    subtitle="",
+                    message=str(e)[:100],
+                    sound=True
+                )
+                self.title = self.ICON_ERROR
+                threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+            finally:
+                self.processing = False
+                model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+                self.status_item.title = f"Ready: {self._get_model_short_name(model_name)}"
+
+        threading.Thread(target=do_transcribe, daemon=True).start()
+
+    # === Help ===
+
+    def show_help(self, _):
+        """Show help information."""
+        rumps.alert(
+            title="Parakeet Help",
+            message=(
+                "QUICK START\n"
+                "• Click 🎤 to start recording\n"
+                "• Click again to stop & transcribe\n"
+                "• Text is copied to clipboard automatically\n\n"
+                "MENU OPTIONS\n"
+                "• Transcribe File: Pick an audio file\n"
+                "• Server: Start/stop the web API\n"
+                "• Model: Change transcription model\n"
+                "• Settings: Configure diarization, etc.\n"
+                "• History: View recent transcriptions\n\n"
+                "KEYBOARD TIPS\n"
+                "The menu bar icon is always accessible.\n"
+                "Use with Alfred/Raycast for quick access.\n\n"
+                "LOGS & DEBUGGING\n"
+                f"Log file: {LOG_PATH}\n"
+                "Settings > Advanced > View Logs\n\n"
+                "NEED MORE HELP?\n"
+                "Visit: github.com/senstella/parakeet-mlx"
+            )
+        )
 
     def show_about(self, _):
         """Show about dialog."""
@@ -1763,32 +2242,52 @@ read -n 1
         else:
             model_info = f"Current model: {current_model_id}"
 
+        # Server status
+        if self._server_process and self._server_process.poll() is None:
+            server_status = f"Server: Running (port {self._server_port})"
+        else:
+            server_status = "Server: Stopped"
+
         rumps.alert(
             title="Parakeet Voice-to-Clipboard",
             message=(
                 "Quick voice transcription for macOS.\n\n"
-                "Usage:\n"
-                "• Click the mic icon to start recording\n"
-                "• Click again to stop and transcribe\n"
-                "• Transcription is copied to clipboard\n\n"
+                "Features:\n"
+                "• Voice recording to clipboard\n"
+                "• File transcription\n"
+                "• Speaker diarization (who spoke when)\n"
+                "• Web API server\n\n"
                 f"{model_info}\n\n"
+                f"{server_status}\n\n"
                 "Model Types:\n"
-                "• TDT: Best accuracy (Token-Duration Transducer)\n"
-                "• CTC: Fastest (Connectionist Temporal Classification)\n"
-                "• Hybrid: Both decoders, flexible\n"
-                "• RNNT: Streaming capable\n\n"
-                "Powered by NVIDIA Parakeet + MLX\n"
+                "• TDT: Best accuracy\n"
+                "• CTC: Fastest inference\n"
+                "• Hybrid: Long audio support\n\n"
+                "Powered by NVIDIA Parakeet + Apple MLX\n"
                 "https://github.com/senstella/parakeet-mlx"
             )
         )
 
     def quit_app(self, _):
         """Quit the application."""
+        # Stop recording if active
         if self.recording:
             self.recording = False
             if self._stream:
                 self._stream.stop()
                 self._stream.close()
+
+        # Stop server if running
+        if self._server_process and self._server_process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self._server_process.pid), signal.SIGTERM)
+                self._server_process.wait(timeout=3)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(self._server_process.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+
         rumps.quit_application()
 
 
