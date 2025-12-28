@@ -1,6 +1,6 @@
 # Parakeet-MLX GUI and API 🦜✨
 
-This project provides a comprehensive GUI and REST API for the amazing [Parakeet-MLX](https://github.com/mlx-community/parakeet-mlx) speech-to-text library, which is a fantastic implementation of Nvidia's ASR (Automatic Speech Recognition) models for Apple Silicon using MLX.
+A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella/parakeet-mlx), Nvidia's ASR (Automatic Speech Recognition) models optimized for Apple Silicon using MLX.
 
 ## Features 🚀
 
@@ -13,48 +13,38 @@ This project provides a comprehensive GUI and REST API for the amazing [Parakeet
 - Audio segment extraction and playback 🎧
 - **Live microphone recording** with direct transcription 🎤
 - **Clipboard integration** for quick copy of transcription results 📋
-- **Menu bar app** for one-click voice-to-clipboard (macOS) 🖥️
+- **Menu bar app** for one-click voice-to-clipboard with model switching and history (macOS) 🖥️
 - Comprehensive CLI client with pip-installable commands 💻
 
 ## Prerequisites ✅
 
+- macOS with Apple Silicon (M1/M2/M3/M4) 🍎
 - Python 3.8 or higher 🐍
-- ffmpeg installed (required by Parakeet-MLX) 🛠️
-- macOS with Apple Silicon (M1/M2/M3 chip) 🍎
-- MLX framework 💪
-- Original parakeet-mlx library 📚
+- ffmpeg installed 🛠️
 
-## Installation ⬇️
+## Quick Start 🚀
 
-1. Make sure ffmpeg is installed:
-   ```bash
-   brew install ffmpeg
-   ```
-   👍
+```bash
+# 1. Install ffmpeg (if not already installed)
+brew install ffmpeg
 
-2. Clone the `parakeet-mlx` repository in the **same parent directory** where you plan to clone this repository.
-   ```bash
-   # Navigate to the desired parent directory
-   cd /path/to/your/projects/directory
-   git clone https://github.com/mlx-community/parakeet-mlx.git
-   ```
-   📂
+# 2. Clone and enter the repository
+git clone https://github.com/yourusername/parakeet-mlx_guiapi.git
+cd parakeet-mlx_guiapi
 
-3. Clone this repository (`parakeet-mlx_guiapi`) in the **same parent directory** as `parakeet-mlx`.
-   ```bash
-   # Assuming you are still in the parent directory from the previous step
-   git clone https://github.com/yourusername/parakeet-mlx_guiapi.git
-   cd parakeet-mlx_guiapi
-   ```
-   📁
+# 3. Create virtual environment and install dependencies
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-4. Create a virtual environment and install dependencies:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-   📦✨
+# 4. Start the server
+python run.py
+```
+
+That's it! The first run will download the model (~600MB).
+
+- **Web GUI**: http://localhost:5001
+- **REST API**: http://localhost:5000/api/
 
 ## Usage ▶️
 
@@ -233,10 +223,31 @@ After installation, find **Parakeet** in:
 
 #### How It Works
 1. A microphone icon (🎤) appears in your macOS menu bar
-2. **Click** the icon to start recording (icon changes to 🔴)
+2. **Click** the icon to start recording (icon shows 🔴 with timer)
 3. **Click again** to stop recording
 4. The app transcribes your audio and **automatically copies to clipboard**
 5. A notification shows a preview of the transcription
+
+#### Menu Bar Features
+
+| Feature | Description |
+|---------|-------------|
+| **Model Selection** | Switch between different Parakeet models (0.6B fast vs 1.1B accurate) |
+| **Recording Timer** | See elapsed time while recording (🔴 0:15) |
+| **Transcription History** | Access last 20 transcriptions, click to copy again |
+| **Settings** | Configure chunk duration, auto-copy, notifications |
+| **Status Display** | See current model and ready/loading state |
+
+#### Available Models
+
+| Model | Speed | Accuracy | Size |
+|-------|-------|----------|------|
+| **Parakeet TDT 0.6B v3** | Fast | Good | ~600MB |
+| Parakeet TDT 1.1B v2 | Slower | Better | ~1.1GB |
+| Parakeet CTC 0.6B v2 | Fast | Good | ~600MB |
+| Parakeet CTC 1.1B | Slower | Better | ~1.1GB |
+
+To change models: Click menu bar icon → **Model** → Select model
 
 #### Manual Installation
 
@@ -300,7 +311,7 @@ Pull requests are welcome! Feel free to contribute bug fixes or new features. We
 
 ## Acknowledgments 🙌
 
-- This project uses the fantastic [Parakeet-MLX](https://github.com/mlx-community/parakeet-mlx) as its core library
+- This project uses [parakeet-mlx](https://github.com/senstella/parakeet-mlx) as its core library
 - Thanks to [Nvidia](https://www.nvidia.com/) for training these powerful models
 - Thanks to [MLX](https://github.com/ml-explore/mlx) for providing the incredible framework
 - Special thanks to [Sam Witteveen](https://github.com/samwit) for his inspirational code and his insightful [YouTube channel](https://www.youtube.com/@samwitteveenai)

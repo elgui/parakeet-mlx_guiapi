@@ -12,22 +12,16 @@ import argparse
 # Add the current directory to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Add the parakeet-mlx directory to sys.path
-# Assumes parakeet-mlx is cloned in the same parent directory as parakeet-mlx_guiapi
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-parakeet_path = os.path.join(parent_dir, 'parakeet-mlx')
-sys.path.append(parakeet_path)
-
 # Import app.py from the current directory
 from app import app, demo
 from parakeet_mlx_guiapi.utils.config import get_config, save_config
-# Import parakeet_mlx after adding its path to sys.path
+
+# Verify parakeet_mlx is installed
 try:
     import parakeet_mlx
 except ImportError:
-    print(f"Error: Could not import 'parakeet_mlx'. Please ensure the 'parakeet-mlx' repository is cloned in the same parent directory as '{os.path.basename(current_dir)}'.")
-    print(f"Expected path: {parakeet_path}")
+    print("Error: parakeet-mlx is not installed.")
+    print("Install it with: pip install parakeet-mlx")
     sys.exit(1)
 
 def main():
@@ -54,7 +48,6 @@ def main():
 
     print(f"Starting Parakeet-MLX GUI and API server on {args.host}:{args.port}")
     print(f"Using model: {config['model_name']}")
-    print(f"Using Parakeet-MLX from: {parakeet_path}")
 
     # Launch the Gradio demo on a different port
     gradio_port = args.port + 1 # Use a different port for Gradio

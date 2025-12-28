@@ -11,7 +11,7 @@ from pathlib import Path
 
 # Default configuration
 DEFAULT_CONFIG = {
-    "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+    "model_name": "mlx-community/parakeet-tdt-0.6b-v3",
     "upload_folder": os.path.join(tempfile.gettempdir(), 'parakeet_uploads'),
     "result_folder": os.path.join(tempfile.gettempdir(), 'parakeet_results'),
     "default_chunk_duration": 120,

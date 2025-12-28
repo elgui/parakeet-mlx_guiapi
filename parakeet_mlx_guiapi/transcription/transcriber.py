@@ -4,33 +4,24 @@ Audio transcription module for Parakeet-MLX GUI and API.
 This module provides the AudioTranscriber class for transcribing audio files.
 """
 
-import torch
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import sys
-import os
 import tempfile
-import json
 import io
 
-# Add the parakeet-mlx directory to sys.path so we can import it
-sys.path.append('/projects/parakeet-mlx')
-
-# Import the parakeet_mlx library
+# Import the parakeet_mlx library (installed via pip)
 from parakeet_mlx import from_pretrained
 
+
 class AudioTranscriber:
-    def __init__(self, model_name="mlx-community/parakeet-tdt-0.6b-v2"):
+    def __init__(self, model_name="mlx-community/parakeet-tdt-0.6b-v3"):
         """
         Initialize the transcriber with the specified model.
 
         Parameters:
         - model_name: HuggingFace model path for the ASR model
         """
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {self.device}")
-
         print(f"Loading model: {model_name}...")
         self.model = from_pretrained(model_name)
         print("Model loaded successfully")
