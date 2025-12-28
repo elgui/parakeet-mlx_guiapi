@@ -16,3 +16,5 @@ requests==2.31.0
 torch
 sounddevice>=0.4.6
 pyperclip>=1.8.0
+rumps>=0.4.0
+py2app>=0.28.0

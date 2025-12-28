@@ -32,6 +32,7 @@ setup(
         "console_scripts": [
             "parakeet-server=run:main",
             "parakeet-client=client:main",
+            "parakeet-menubar=menubar_app:main",
         ],
     },
 )

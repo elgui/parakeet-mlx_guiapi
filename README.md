@@ -13,6 +13,7 @@ This project provides a comprehensive GUI and REST API for the amazing [Parakeet
 - Audio segment extraction and playback 🎧
 - **Live microphone recording** with direct transcription 🎤
 - **Clipboard integration** for quick copy of transcription results 📋
+- **Menu bar app** for one-click voice-to-clipboard (macOS) 🖥️
 - Comprehensive CLI client with pip-installable commands 💻
 
 ## Prerequisites ✅
@@ -207,6 +208,87 @@ python client.py --mic --output-file transcription.txt
 After installing with pip (`pip install -e .`), you can use:
 - `parakeet-server` - Start the server
 - `parakeet-client` - Run the CLI client
+- `parakeet-menubar` - Launch the menu bar app
+
+### Menu Bar App (Voice-to-Clipboard) 📋
+
+A macOS menu bar app for quick, seamless voice transcription. Click to record, click to stop - transcription is automatically copied to your clipboard.
+
+#### One-Line Install (Recommended) 🚀
+
+```bash
+./install_menubar_app.sh
+```
+
+This script will:
+1. Build the standalone `Parakeet.app`
+2. Install it to `/Applications`
+3. Optionally add it to Login Items (start at boot)
+4. Launch the app
+
+After installation, find **Parakeet** in:
+- Your **menu bar** (🎤 icon in the top-right)
+- **Spotlight** (Cmd+Space, type "Parakeet")
+- **Applications** folder
+
+#### How It Works
+1. A microphone icon (🎤) appears in your macOS menu bar
+2. **Click** the icon to start recording (icon changes to 🔴)
+3. **Click again** to stop recording
+4. The app transcribes your audio and **automatically copies to clipboard**
+5. A notification shows a preview of the transcription
+
+#### Manual Installation
+
+If you prefer to install manually:
+
+```bash
+# 1. Build the app
+pip install py2app rumps pyobjc-framework-Cocoa
+python setup_app.py py2app
+
+# 2. Copy to Applications
+cp -R dist/Parakeet.app /Applications/
+
+# 3. Launch
+open /Applications/Parakeet.app
+```
+
+#### Start at Login
+
+To have Parakeet start automatically when you log in:
+
+1. Open **System Settings** (or System Preferences on older macOS)
+2. Go to **General → Login Items** (or Users & Groups → Login Items)
+3. Click **+** and select `/Applications/Parakeet.app`
+
+Or via Terminal:
+```bash
+osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/Parakeet.app", hidden:false}'
+```
+
+#### Running from Terminal (Development)
+
+For development or testing without building the app:
+
+```bash
+# Run directly
+python menubar_app.py
+
+# Or after pip install -e .
+parakeet-menubar
+```
+
+#### Troubleshooting
+
+**"Parakeet" can't be opened because Apple cannot check it for malicious software:**
+1. Open **System Settings → Privacy & Security**
+2. Scroll down to find the message about Parakeet
+3. Click **Open Anyway**
+
+**Microphone permission:**
+- The first time you record, macOS will ask for microphone permission
+- If denied, go to **System Settings → Privacy & Security → Microphone** and enable Parakeet
 
 ## License 📜
 
