@@ -182,9 +182,12 @@ class TestTranscriberInitialization:
 
     def test_transcriber_accepts_model_name(self):
         """Test that transcriber accepts model_name parameter."""
-        from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
-        import inspect
+        try:
+            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+        except (ImportError, ModuleNotFoundError) as e:
+            pytest.skip(f"parakeet_mlx not available: {e}")
 
+        import inspect
         sig = inspect.signature(AudioTranscriber.__init__)
         params = list(sig.parameters.keys())
 
@@ -192,9 +195,12 @@ class TestTranscriberInitialization:
 
     def test_default_model_name(self):
         """Test default model name is set."""
-        from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
-        import inspect
+        try:
+            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+        except (ImportError, ModuleNotFoundError) as e:
+            pytest.skip(f"parakeet_mlx not available: {e}")
 
+        import inspect
         sig = inspect.signature(AudioTranscriber.__init__)
 
         # Check default value
@@ -208,9 +214,12 @@ class TestTranscribeMethodSignature:
 
     def test_transcribe_parameters(self):
         """Test transcribe method has expected parameters."""
-        from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
-        import inspect
+        try:
+            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+        except (ImportError, ModuleNotFoundError) as e:
+            pytest.skip(f"parakeet_mlx not available: {e}")
 
+        import inspect
         sig = inspect.signature(AudioTranscriber.transcribe)
         params = list(sig.parameters.keys())
 
@@ -220,7 +229,10 @@ class TestTranscribeMethodSignature:
 
     def test_transcribe_returns_tuple(self):
         """Test that transcribe is documented to return DataFrame and text."""
-        from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+        try:
+            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+        except (ImportError, ModuleNotFoundError) as e:
+            pytest.skip(f"parakeet_mlx not available: {e}")
 
         # Check docstring mentions return type
         docstring = AudioTranscriber.transcribe.__doc__
