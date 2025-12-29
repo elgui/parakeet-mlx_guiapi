@@ -12,6 +12,11 @@ import argparse
 # Add the current directory to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Add sibling parakeet-mlx directory to sys.path
+parakeet_mlx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'parakeet-mlx')
+if os.path.exists(parakeet_mlx_path):
+    sys.path.insert(0, parakeet_mlx_path)
+
 # Import app.py from the current directory
 from app import app, demo
 from parakeet_mlx_guiapi.utils.config import get_config, save_config
@@ -50,11 +55,23 @@ def main():
     print(f"Using model: {config['model_name']}")
 
     # Launch the Gradio demo on a different port
-    gradio_port = args.port + 1 # Use a different port for Gradio
+    gradio_port = int(os.environ.get("GRADIO_SERVER_PORT", args.port + 1))
     print(f"Starting Gradio demo on {args.host}:{gradio_port}")
-    demo.launch(server_name=args.host, server_port=gradio_port, debug=config["debug"])
 
-    # Run the Flask app
+    # Launch Gradio in non-blocking mode (in a thread)
+    import threading
+    gradio_thread = threading.Thread(
+        target=lambda: demo.launch(
+            server_name=args.host,
+            server_port=gradio_port,
+            debug=config["debug"],
+            prevent_thread_lock=True
+        ),
+        daemon=True
+    )
+    gradio_thread.start()
+
+    # Run the Flask app (this blocks)
     print(f"Starting Flask app on {args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=config["debug"])
 

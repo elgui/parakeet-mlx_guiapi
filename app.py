@@ -10,8 +10,10 @@ from flask import Flask, render_template
 from flask_cors import CORS
 import gradio as gr
 
-# Add the parakeet-mlx directory to sys.path so we can import it
-sys.path.append('/projects/parakeet-mlx')
+# Add the parakeet-mlx sibling directory to sys.path so we can import it
+parakeet_mlx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'parakeet-mlx')
+if os.path.exists(parakeet_mlx_path):
+    sys.path.insert(0, parakeet_mlx_path)
 
 # Import from our package
 from parakeet_mlx_guiapi.api import setup_api_routes
