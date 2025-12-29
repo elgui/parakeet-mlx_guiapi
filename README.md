@@ -61,8 +61,8 @@ This installs **Parakeet.app** to `/Applications`. Launch it from:
 python run.py
 ```
 
-- **Web GUI**: http://localhost:5001
-- **REST API**: http://localhost:5000/api/
+- **Web GUI**: http://localhost:8081
+- **REST API**: http://localhost:8080/api/
 
 The first run will download the model (~1.2GB).
 
@@ -84,19 +84,19 @@ python run.py --host 127.0.0.1 --port 8000 --debug --model <model_name>
 
 Server options:
 - `--host`: Host to bind to (default: 0.0.0.0)
-- `--port`: Port for the Flask API (default: 5000)
+- `--port`: Port for the Flask API (default: 8080)
 - `--debug`: Enable debug mode
 - `--model`: Specify the ASR model to use
 
 The server will start and be accessible at:
-- Gradio Web GUI: http://localhost:5001 (port + 1) 🌐
-- REST API: http://localhost:5000/api/ 🔌
+- Gradio Web GUI: http://localhost:8081 (port + 1) 🌐
+- REST API: http://localhost:8080/api/ 🔌
 
-Note: The Gradio UI runs on port+1 from the specified port (default: 5001).
+Note: The Gradio UI runs on port+1 from the specified port (default: 8081).
 
 ### Web GUI 🖥️
 
-1. Open your browser and navigate to http://localhost:5001 (Gradio interface)
+1. Open your browser and navigate to http://localhost:8081 (Gradio interface)
 2. Upload an audio file using the interface ⬆️
 3. Configure transcription options:
    - Output Format: json, txt, srt, or vtt 📄
@@ -128,7 +128,7 @@ Response:
 
 Example cURL request:
 ```bash
-curl -X POST -F "file=@audio.mp3" -F "output_format=json" http://localhost:5000/api/transcribe
+curl -X POST -F "file=@audio.mp3" -F "output_format=json" http://localhost:8080/api/transcribe
 ```
 
 #### Get Audio Segment ✂️🎧
@@ -147,7 +147,7 @@ Response:
 
 Example cURL request:
 ```bash
-curl -X POST -F "file=@audio.mp3" -F "start_time=10" -F "end_time=20" http://localhost:5000/api/segment -o segment.wav
+curl -X POST -F "file=@audio.mp3" -F "start_time=10" -F "end_time=20" http://localhost:8080/api/segment -o segment.wav
 ```
 
 #### Get Available Models 🧠
@@ -161,7 +161,7 @@ Response:
 
 Example cURL request:
 ```bash
-curl http://localhost:5000/api/models
+curl http://localhost:8080/api/models
 ```
 
 ### CLI Client 💻
@@ -204,7 +204,7 @@ python client.py --mic --output-file transcription.txt
 |--------|-------------|
 | `--mic` | Record from microphone instead of using a file |
 | `--clipboard` | Copy transcription result to clipboard |
-| `--api-url` | Base URL for the API (default: http://localhost:5000/api) |
+| `--api-url` | Base URL for the API (default: http://localhost:8080/api) |
 | `--output-format` | Output format: json, txt, srt, vtt, csv (default: json) |
 | `--highlight-words` | Enable word-level timestamps in SRT/VTT |
 | `--chunk-duration` | Chunking duration in seconds (default: 120, 0 to disable) |
