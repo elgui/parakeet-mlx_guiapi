@@ -32,7 +32,7 @@ except ImportError:
 def main():
     parser = argparse.ArgumentParser(description='Parakeet-MLX GUI and API Server')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to run the server on')
-    parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
+    parser.add_argument('--port', type=int, default=8080, help='Port to run the server on (default: 8080, since 5000 is used by macOS AirPlay)')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
     parser.add_argument('--model', type=str, help='Model name to use')
 

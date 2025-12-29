@@ -216,8 +216,8 @@ class ParakeetMenuBarApp(rumps.App):
 
         # Server control
         self._server_process = None
-        self._server_port = 5000
-        self._gradio_port = 5001
+        self._server_port = 8080  # Default port (5000 is used by macOS AirPlay)
+        self._gradio_port = 8081
 
         # Load config
         self.config = get_config()
@@ -351,16 +351,16 @@ class ParakeetMenuBarApp(rumps.App):
 
         # Port configuration
         port_menu = rumps.MenuItem("API Port")
-        current_port = self.config.get("server_port", 5000)
-        for port in [5000, 8000, 8080, 3000]:
+        current_port = self.config.get("server_port", 8080)
+        for port in [8080, 8000, 3000, 5000]:
             title = f"{'✓ ' if port == current_port else ''}{port}"
             port_menu.add(rumps.MenuItem(title, callback=lambda _, p=port: self.set_server_port(p)))
         config_menu.add(port_menu)
 
         # Gradio port
         gradio_port_menu = rumps.MenuItem("Gradio Port")
-        current_gradio = self.config.get("gradio_port", 5001)
-        for port in [5001, 7860, 8001]:
+        current_gradio = self.config.get("gradio_port", 8081)
+        for port in [8081, 7860, 5001]:
             title = f"{'✓ ' if port == current_gradio else ''}{port}"
             gradio_port_menu.add(rumps.MenuItem(title, callback=lambda _, p=port: self.set_gradio_port(p)))
         config_menu.add(gradio_port_menu)
@@ -1856,7 +1856,7 @@ read -n 1
 
         try:
             # Get config
-            port = self.config.get("server_port", 5000)
+            port = self.config.get("server_port", 8080)
             gradio_port = self.config.get("gradio_port", 5001)
             debug = self.config.get("server_debug", False)
             model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
@@ -1953,7 +1953,7 @@ read -n 1
 
     def open_web_ui(self, _):
         """Open the Gradio web UI in browser."""
-        port = self.config.get("gradio_port", 5001)
+        port = self.config.get("gradio_port", 8081)
         webbrowser.open(f"http://127.0.0.1:{port}")
 
     def open_api_docs(self, _):
