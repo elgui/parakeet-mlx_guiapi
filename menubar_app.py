@@ -340,7 +340,8 @@ class ParakeetMenuBarApp(rumps.App):
 
         self.server_menu.add(None)
 
-        # Open Web UI
+        # Quick links
+        self.server_menu.add(rumps.MenuItem("🎤 Live Transcription", callback=self.open_live_transcription))
         self.server_menu.add(rumps.MenuItem("🌐 Open Web UI", callback=self.open_web_ui))
         self.server_menu.add(rumps.MenuItem("📊 Open API Docs", callback=self.open_api_docs))
 
@@ -1385,10 +1386,15 @@ read -n 1
         # Update menu
         self._refresh_model_menu()
 
-        # Reload transcriber
+        # Reload transcriber for direct transcription
         self.transcriber = None
         self.status_item.title = f"Loading {model['name']}..."
         threading.Thread(target=self._init_transcriber, daemon=True).start()
+
+        # Restart server if running to use new model
+        if self._server_process and self._server_process.poll() is None:
+            logger.info(f"Restarting server for model change: {model['id']}")
+            threading.Thread(target=self._restart_server_for_model_change, daemon=True).start()
 
         rumps.notification(
             title="Loading Model",
@@ -1396,6 +1402,11 @@ read -n 1
             message="Loading from cache...",
             sound=False
         )
+
+    def _restart_server_for_model_change(self):
+        """Restart the server after a brief delay to allow model to load."""
+        time.sleep(2)  # Give the transcriber time to start loading
+        self.restart_server(None)
 
     def _download_and_load_model(self, model):
         """Download a model in Terminal with progress, then load it."""
@@ -1955,6 +1966,11 @@ read -n 1
         """Open the Gradio web UI in browser."""
         port = self.config.get("gradio_port", 8081)
         webbrowser.open(f"http://127.0.0.1:{port}")
+
+    def open_live_transcription(self, _):
+        """Open the live transcription page in browser."""
+        port = self.config.get("server_port", 8080)
+        webbrowser.open(f"http://127.0.0.1:{port}/live")
 
     def open_api_docs(self, _):
         """Open the API documentation."""

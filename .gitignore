@@ -2,3 +2,4 @@
 __pycache__/
 ./__pycache__/
 *.pyc
+parakeet_mlx_guiapi/transcription/__pycache__/transcriber.cpython-312.pyc

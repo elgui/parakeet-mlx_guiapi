@@ -207,6 +207,7 @@ class SpeakerDiarizer:
         try:
             from pyannote.audio import Pipeline
             import torch
+            # Note: pyannote Audio class is patched in __init__.py to use soundfile backend
         except ImportError:
             raise ImportError(
                 "pyannote.audio is required for speaker diarization.\n"
@@ -236,9 +237,12 @@ class SpeakerDiarizer:
 
         print("Loading speaker diarization model...")
 
+        # Set HF_TOKEN env var - this is the most reliable way to authenticate
+        # as the parameter name changes between pyannote/huggingface_hub versions
+        os.environ["HF_TOKEN"] = self.hf_token
+
         self.pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=self.hf_token
+            "pyannote/speaker-diarization-3.1"
         )
 
         # Set device - prefer CPU on Apple Silicon for stability

@@ -19,6 +19,7 @@ if os.path.exists(parakeet_mlx_path):
 from parakeet_mlx_guiapi.api import setup_api_routes
 from parakeet_mlx_guiapi.ui import create_gradio_interface
 from parakeet_mlx_guiapi.utils.config import get_config
+from parakeet_mlx_guiapi.live import setup_live_routes
 
 # Initialize the Flask app
 app = Flask(__name__)
@@ -26,6 +27,9 @@ CORS(app)  # Enable CORS for all routes
 
 # Set up API routes
 setup_api_routes(app)
+
+# Set up live transcription routes (WebSocket + /live page)
+setup_live_routes(app)
 
 # Create Gradio interface
 demo = create_gradio_interface()

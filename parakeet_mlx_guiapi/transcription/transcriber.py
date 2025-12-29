@@ -31,6 +31,8 @@ class AudioTranscriber:
         logger.info(f"AudioTranscriber.__init__ called with model: {model_name}")
         print(f"Loading model: {model_name}...")
 
+        self.model_name = model_name  # Store for later reference
+
         try:
             logger.info("Calling parakeet_mlx.from_pretrained()...")
             self.model = from_pretrained(model_name)

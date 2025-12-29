@@ -1,0 +1,1550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Live Transcription</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Header */
+        header {
+            background: #2196F3;
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 10;
+        }
+
+        header h1 {
+            font-size: 1.2rem;
+            font-weight: 500;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+
+        .status-dot.connected {
+            background: #4CAF50;
+        }
+
+        .status-dot.recording {
+            background: #f44336;
+            animation: pulse 1s infinite;
+        }
+
+        .status-dot.processing {
+            background: #FF9800;
+            animation: pulse 0.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Chat container */
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .message {
+            padding: 0.75rem 1rem;
+            border-radius: 1rem;
+            max-width: 90%;
+            word-wrap: break-word;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .message .speaker {
+            font-weight: 600;
+            font-size: 0.8rem;
+            margin-bottom: 0.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .message .speaker .time {
+            font-weight: normal;
+            color: #666;
+            font-size: 0.75rem;
+        }
+
+        .message .text {
+            font-size: 0.95rem;
+            line-height: 1.4;
+        }
+
+        .system-message {
+            text-align: center;
+            color: #666;
+            font-size: 0.85rem;
+            padding: 0.5rem;
+        }
+
+        /* Empty state */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            color: #999;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .empty-state .icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+
+        .empty-state p {
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Controls footer */
+        footer {
+            background: white;
+            padding: 1rem;
+            border-top: 1px solid #ddd;
+            box-shadow: 0 -2px 4px rgba(0,0,0,0.05);
+        }
+
+        .controls {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .controls button {
+            min-height: 48px;
+            min-width: 48px;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 2rem;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+        }
+
+        .controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-record {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-record:hover:not(:disabled) {
+            background: #45a049;
+        }
+
+        .btn-record.recording {
+            background: #f44336;
+        }
+
+        .btn-stop {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-stop:hover:not(:disabled) {
+            background: #da190b;
+        }
+
+        .btn-export {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-export:hover:not(:disabled) {
+            background: #1976D2;
+        }
+
+        .btn-clear {
+            background: #9E9E9E;
+            color: white;
+        }
+
+        .btn-clear:hover:not(:disabled) {
+            background: #757575;
+        }
+
+        /* Timer display */
+        .timer {
+            text-align: center;
+            font-size: 0.9rem;
+            color: #666;
+            margin-top: 0.5rem;
+        }
+
+        .timer.recording {
+            color: #f44336;
+            font-weight: 500;
+        }
+
+        /* Settings panel */
+        .settings-panel {
+            background: #f9f9f9;
+            padding: 0.75rem 1rem;
+            border-top: 1px solid #eee;
+            display: none;
+        }
+
+        .settings-panel.visible {
+            display: block;
+        }
+
+        .setting-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .setting-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .setting-row label {
+            font-size: 0.9rem;
+            color: #333;
+        }
+
+        .setting-row select,
+        .setting-row input[type="checkbox"] {
+            font-size: 0.9rem;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .slider-container input[type="range"] {
+            width: 100px;
+            cursor: pointer;
+        }
+
+        .slider-container span {
+            min-width: 2.5rem;
+            text-align: right;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        /* Export dropdown */
+        .export-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .export-menu {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            margin-bottom: 0.5rem;
+            overflow: hidden;
+            z-index: 100;
+        }
+
+        .export-menu.visible {
+            display: block;
+        }
+
+        .export-menu button {
+            display: block;
+            width: 100%;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            background: white;
+            text-align: left;
+            cursor: pointer;
+            font-size: 0.9rem;
+            border-radius: 0;
+            min-height: auto;
+        }
+
+        .export-menu button:hover {
+            background: #f5f5f5;
+        }
+
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .loading-overlay.visible {
+            display: flex;
+        }
+
+        .loading-content {
+            background: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            text-align: center;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #2196F3;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Error toast */
+        .toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 2rem;
+            font-size: 0.9rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 1000;
+            max-width: 90%;
+            text-align: center;
+        }
+
+        .toast.visible {
+            opacity: 1;
+        }
+
+        .toast.error {
+            background: #f44336;
+        }
+
+        /* Debug panel */
+        .debug-panel {
+            display: none;
+            position: fixed;
+            top: 60px;
+            left: 0;
+            right: 0;
+            max-height: 40vh;
+            background: #1e1e1e;
+            color: #00ff00;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 0.75rem;
+            overflow-y: auto;
+            z-index: 50;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .debug-panel.visible {
+            display: block;
+        }
+
+        .debug-header {
+            position: sticky;
+            top: 0;
+            background: #333;
+            padding: 0.5rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #444;
+        }
+
+        .debug-header h3 {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #fff;
+        }
+
+        .copy-logs-btn {
+            background: #4a5568;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            margin-left: 0.5rem;
+        }
+
+        .copy-logs-btn:hover {
+            background: #5a6578;
+        }
+
+        .copy-logs-btn.copied {
+            background: #48bb78;
+        }
+
+        .debug-model {
+            color: #4CAF50;
+            font-size: 0.75rem;
+        }
+
+        .debug-logs {
+            padding: 0.5rem 1rem;
+            max-height: calc(40vh - 40px);
+            overflow-y: auto;
+        }
+
+        .debug-log {
+            padding: 0.25rem 0;
+            border-bottom: 1px solid #333;
+            line-height: 1.4;
+        }
+
+        .debug-log .time {
+            color: #888;
+            margin-right: 0.5rem;
+        }
+
+        .debug-log.error {
+            color: #f44336;
+        }
+
+        .debug-log.warn {
+            color: #ff9800;
+        }
+
+        .debug-log.info {
+            color: #2196F3;
+        }
+
+        .debug-log.success {
+            color: #4CAF50;
+        }
+
+        .debug-toggle {
+            position: fixed;
+            top: 65px;
+            right: 10px;
+            background: #333;
+            color: #00ff00;
+            border: 1px solid #00ff00;
+            border-radius: 4px;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.7rem;
+            font-family: monospace;
+            cursor: pointer;
+            z-index: 100;
+            display: none;
+        }
+
+        .debug-toggle.visible {
+            display: block;
+        }
+
+        /* Adjust chat container when debug is visible */
+        body.debug-mode .chat-container {
+            margin-top: 40vh;
+        }
+
+        /* VU Meter */
+        .vu-meter-container {
+            display: none;
+            background: #1e1e1e;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #333;
+        }
+
+        .vu-meter-container.visible {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .vu-meter-label {
+            color: #888;
+            font-size: 0.75rem;
+            font-family: monospace;
+            min-width: 50px;
+        }
+
+        .vu-meter {
+            flex: 1;
+            height: 20px;
+            background: #333;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .vu-meter-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50 0%, #FFEB3B 70%, #f44336 90%);
+            width: 0%;
+            transition: width 0.05s ease-out;
+        }
+
+        .vu-meter-peak {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            width: 3px;
+            background: #fff;
+            transition: left 0.1s ease-out;
+        }
+
+        .vu-meter-value {
+            color: #00ff00;
+            font-size: 0.75rem;
+            font-family: monospace;
+            min-width: 60px;
+            text-align: right;
+        }
+
+        /* Audio stats */
+        .audio-stats {
+            display: none;
+            background: #1e1e1e;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #333;
+            font-family: monospace;
+            font-size: 0.7rem;
+            color: #888;
+        }
+
+        .audio-stats.visible {
+            display: flex;
+            gap: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .audio-stats .stat {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .audio-stats .stat-label {
+            color: #666;
+        }
+
+        .audio-stats .stat-value {
+            color: #00ff00;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Live Transcription</h1>
+        <div class="status-indicator">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Connecting...</span>
+        </div>
+    </header>
+
+    <!-- Debug Panel (visible when ?debug=true) -->
+    <div class="debug-panel" id="debugPanel">
+        <div class="debug-header">
+            <h3>🔧 Debug Console</h3>
+            <button class="copy-logs-btn" id="copyLogsBtn" title="Copy logs to clipboard">📋 Copy</button>
+            <span class="debug-model" id="debugModel">Model: loading...</span>
+        </div>
+        <!-- VU Meter -->
+        <div class="vu-meter-container visible" id="vuMeterContainer">
+            <span class="vu-meter-label">Level:</span>
+            <div class="vu-meter">
+                <div class="vu-meter-bar" id="vuMeterBar"></div>
+                <div class="vu-meter-peak" id="vuMeterPeak"></div>
+            </div>
+            <span class="vu-meter-value" id="vuMeterValue">-∞ dB</span>
+        </div>
+        <!-- Audio Stats -->
+        <div class="audio-stats visible" id="audioStats">
+            <div class="stat">
+                <span class="stat-label">Sample Rate:</span>
+                <span class="stat-value" id="statSampleRate">--</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Sent:</span>
+                <span class="stat-value" id="statChunksSent">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Processed:</span>
+                <span class="stat-value" id="statChunksReceived">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Queue:</span>
+                <span class="stat-value" id="statQueueSize">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Last Chunk:</span>
+                <span class="stat-value" id="statLastChunk">--</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">WS State:</span>
+                <span class="stat-value" id="statWsState">--</span>
+            </div>
+        </div>
+        <div class="debug-logs" id="debugLogs"></div>
+    </div>
+    <button class="debug-toggle" id="debugToggle" onclick="toggleDebugPanel()">▼ Debug</button>
+
+    <div class="chat-container" id="chatContainer">
+        <div class="empty-state" id="emptyState">
+            <div class="icon">🎤</div>
+            <p>Tap "Start Recording" to begin</p>
+            <p style="font-size: 0.85rem; color: #aaa;">Speak clearly, transcription appears when you pause</p>
+        </div>
+    </div>
+
+    <div class="settings-panel" id="settingsPanel">
+        <div class="setting-row">
+            <label>Speaker Identification</label>
+            <input type="checkbox" id="enableDiarization" checked>
+        </div>
+        <div class="setting-row">
+            <label>Speaker Match Sensitivity</label>
+            <div class="slider-container">
+                <input type="range" id="similarityThreshold" min="0.2" max="0.8" step="0.05" value="0.45">
+                <span id="thresholdValue">0.45</span>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <div class="controls">
+            <button class="btn-record" id="recordBtn" disabled>
+                <span>🎤</span> Start Recording
+            </button>
+            <div class="export-dropdown">
+                <button class="btn-export" id="exportBtn" disabled>
+                    <span>📥</span> Export
+                </button>
+                <div class="export-menu" id="exportMenu">
+                    <button onclick="exportTranscript('txt')">Export as TXT</button>
+                    <button onclick="exportTranscript('srt')">Export as SRT</button>
+                </div>
+            </div>
+            <button class="btn-clear" id="clearBtn" disabled>
+                <span>🗑️</span>
+            </button>
+        </div>
+        <div class="timer" id="timer"></div>
+    </footer>
+
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <p id="loadingText">Processing...</p>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <!-- VAD Web Library -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.18/dist/bundle.min.js"></script>
+
+    <!-- Cache buster: v15-20251229-threshold-slider -->
+    <script>
+        // State
+        let ws = null;
+        let sessionId = null;
+        let isRecording = false;
+        let vadInstance = null;
+        let mediaStream = null;
+        let recordingStartTime = null;
+        let timerInterval = null;
+        let messageCount = 0;
+        let currentChunkStart = 0;
+
+        // Debug mode
+        const urlParams = new URLSearchParams(window.location.search);
+        const debugMode = urlParams.get('debug') === 'true';
+        let debugPanelVisible = true;
+        let modelName = 'unknown';
+
+        // VU meter state
+        let audioContext = null;
+        let analyser = null;
+        let vuMeterAnimationId = null;
+        let peakLevel = 0;
+        let peakHoldTime = 0;
+        let chunksSent = 0;
+        let chunksReceived = 0;
+
+        // DOM Elements
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const chatContainer = document.getElementById('chatContainer');
+        const emptyState = document.getElementById('emptyState');
+        const recordBtn = document.getElementById('recordBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const exportMenu = document.getElementById('exportMenu');
+        const timer = document.getElementById('timer');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+        const toast = document.getElementById('toast');
+        const enableDiarization = document.getElementById('enableDiarization');
+        const similarityThreshold = document.getElementById('similarityThreshold');
+        const thresholdValue = document.getElementById('thresholdValue');
+        const debugPanel = document.getElementById('debugPanel');
+        const debugLogs = document.getElementById('debugLogs');
+        const debugModel = document.getElementById('debugModel');
+        const debugToggle = document.getElementById('debugToggle');
+        const copyLogsBtn = document.getElementById('copyLogsBtn');
+
+        // VU meter elements
+        const vuMeterBar = document.getElementById('vuMeterBar');
+        const vuMeterPeak = document.getElementById('vuMeterPeak');
+        const vuMeterValue = document.getElementById('vuMeterValue');
+        const statSampleRate = document.getElementById('statSampleRate');
+        const statChunksSent = document.getElementById('statChunksSent');
+        const statChunksReceived = document.getElementById('statChunksReceived');
+        const statQueueSize = document.getElementById('statQueueSize');
+        const statLastChunk = document.getElementById('statLastChunk');
+        const statWsState = document.getElementById('statWsState');
+
+        // Initialize debug mode
+        if (debugMode) {
+            debugPanel.classList.add('visible');
+            debugToggle.classList.add('visible');
+            document.body.classList.add('debug-mode');
+            debugLog('Debug mode enabled (v16 - fixed AudioDecoder)', 'info');
+
+            // Check if required libraries are loaded
+            if (typeof ort === 'undefined') {
+                debugLog('WARNING: ONNX Runtime not loaded!', 'error');
+            } else {
+                debugLog('ONNX Runtime loaded: ' + (ort.env ? 'OK' : 'partial'), 'success');
+            }
+
+            if (typeof vad === 'undefined' || !vad.MicVAD) {
+                debugLog('WARNING: VAD library not loaded!', 'error');
+            } else {
+                debugLog('VAD library loaded: OK', 'success');
+            }
+        }
+
+        // Debug logging function
+        function debugLog(message, type = 'log') {
+            if (!debugMode) return;
+
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('en-US', { hour12: false }) + '.' + now.getMilliseconds().toString().padStart(3, '0');
+
+            const logEntry = document.createElement('div');
+            logEntry.className = `debug-log ${type}`;
+            logEntry.innerHTML = `<span class="time">[${timeStr}]</span> ${escapeHtml(message)}`;
+
+            debugLogs.appendChild(logEntry);
+            debugLogs.scrollTop = debugLogs.scrollHeight;
+
+            // Also log to browser console
+            console.log(`[DEBUG ${type.toUpperCase()}] ${message}`);
+        }
+
+        // Update WebSocket state display
+        function updateWsState() {
+            if (!ws) {
+                statWsState.textContent = 'null';
+                return;
+            }
+            const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+            statWsState.textContent = states[ws.readyState] || 'UNKNOWN';
+        }
+
+        // VU meter functions
+        function initVUMeter(stream) {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                analyser.smoothingTimeConstant = 0.3;
+
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+
+                statSampleRate.textContent = audioContext.sampleRate + ' Hz';
+                debugLog(`Audio context initialized: ${audioContext.sampleRate} Hz`, 'success');
+
+                updateVUMeter();
+            } catch (e) {
+                debugLog(`Failed to init VU meter: ${e.message}`, 'error');
+            }
+        }
+
+        function updateVUMeter() {
+            if (!analyser || !isRecording) {
+                vuMeterBar.style.width = '0%';
+                vuMeterValue.textContent = '-∞ dB';
+                return;
+            }
+
+            const dataArray = new Float32Array(analyser.frequencyBinCount);
+            analyser.getFloatTimeDomainData(dataArray);
+
+            // Calculate RMS level
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i] * dataArray[i];
+            }
+            const rms = Math.sqrt(sum / dataArray.length);
+
+            // Convert to dB
+            const db = 20 * Math.log10(Math.max(rms, 0.00001));
+            const normalizedDb = Math.max(0, Math.min(100, (db + 60) * 1.67)); // -60dB to 0dB -> 0 to 100%
+
+            // Update bar
+            vuMeterBar.style.width = normalizedDb + '%';
+            vuMeterValue.textContent = db.toFixed(1) + ' dB';
+
+            // Update peak
+            if (normalizedDb > peakLevel) {
+                peakLevel = normalizedDb;
+                peakHoldTime = 30; // Hold for 30 frames
+            } else if (peakHoldTime > 0) {
+                peakHoldTime--;
+            } else {
+                peakLevel = Math.max(peakLevel - 2, normalizedDb);
+            }
+            vuMeterPeak.style.left = peakLevel + '%';
+
+            vuMeterAnimationId = requestAnimationFrame(updateVUMeter);
+        }
+
+        function stopVUMeter() {
+            if (vuMeterAnimationId) {
+                cancelAnimationFrame(vuMeterAnimationId);
+                vuMeterAnimationId = null;
+            }
+            vuMeterBar.style.width = '0%';
+            vuMeterValue.textContent = '-∞ dB';
+            peakLevel = 0;
+        }
+
+        // Toggle debug panel
+        function toggleDebugPanel() {
+            debugPanelVisible = !debugPanelVisible;
+            if (debugPanelVisible) {
+                debugPanel.classList.add('visible');
+                document.body.classList.add('debug-mode');
+                debugToggle.textContent = '▼ Debug';
+            } else {
+                debugPanel.classList.remove('visible');
+                document.body.classList.remove('debug-mode');
+                debugToggle.textContent = '▲ Debug';
+            }
+        }
+
+        // Initialize WebSocket
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/live-transcribe`;
+            debugLog(`Connecting to WebSocket: ${wsUrl}`, 'info');
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                debugLog('WebSocket connected', 'success');
+                setStatus('connected', 'Ready');
+                recordBtn.disabled = false;
+                updateWsState();
+            };
+
+            ws.onclose = () => {
+                debugLog('WebSocket disconnected', 'warn');
+                setStatus('disconnected', 'Disconnected');
+                recordBtn.disabled = true;
+                updateWsState();
+
+                // Attempt to reconnect after 3 seconds
+                debugLog('Reconnecting in 3 seconds...', 'info');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                debugLog(`WebSocket error: ${error.message || 'unknown error'}`, 'error');
+                showToast('Connection error', true);
+                updateWsState();
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+        }
+
+        // Handle incoming messages
+        function handleMessage(data) {
+            debugLog(`Received: ${data.type}`, 'log');
+
+            switch (data.type) {
+                case 'connected':
+                    sessionId = data.session_id;
+                    modelName = data.model_name || 'unknown';
+                    const diarAvailable = data.diarization_available ? 'YES' : 'NO';
+                    const diarEnabled = data.diarization_enabled ? 'YES' : 'NO';
+                    debugLog(`Session ID: ${sessionId}`, 'success');
+                    debugLog(`Model: ${modelName}`, 'info');
+                    debugLog(`Diarization: enabled=${diarEnabled}, available=${diarAvailable}`, data.diarization_available ? 'success' : 'warn');
+                    if (!data.diarization_available) {
+                        debugLog('⚠️ Diarization not available - check server logs for details', 'error');
+                    }
+                    debugModel.textContent = `Model: ${modelName}`;
+                    // Send initial config
+                    sendConfig();
+                    break;
+
+                case 'status':
+                    if (data.message === 'Processing audio...') {
+                        showLoading('Transcribing...');
+                    }
+                    if (data.debug) {
+                        debugLog(`Status: ${data.message} (${data.debug.audio_size_kb} KB at ${data.debug.chunk_start}s)`, 'info');
+                    }
+                    break;
+
+                case 'debug':
+                    debugLog(`Server: ${data.message}`, 'log');
+                    break;
+
+                case 'transcription':
+                    hideLoading();
+                    chunksReceived++;
+                    statChunksReceived.textContent = chunksReceived;
+                    // Update queue estimate
+                    const queueSize = Math.max(0, chunksSent - chunksReceived);
+                    statQueueSize.textContent = queueSize;
+                    if (data.messages && data.messages.length > 0) {
+                        debugLog(`✓ Transcription #${chunksReceived}: ${data.messages.length} segment(s), queue: ${queueSize}`, 'success');
+                        data.messages.forEach(msg => {
+                            debugLog(`  [${msg.speaker}] ${msg.text.substring(0, 80)}${msg.text.length > 80 ? '...' : ''}`, 'log');
+                        });
+                        appendMessages(data.messages);
+                    } else {
+                        debugLog(`⚠ Transcription #${chunksReceived}: empty result (no speech detected), queue: ${queueSize}`, 'warn');
+                    }
+                    break;
+
+                case 'export_result':
+                    debugLog(`Export complete: ${data.filename}`, 'success');
+                    downloadFile(data.content, data.filename);
+                    showToast('Export complete');
+                    break;
+
+                case 'error':
+                    hideLoading();
+                    debugLog(`Error: ${data.message}`, 'error');
+                    showToast(data.message, true);
+                    break;
+            }
+        }
+
+        // Send configuration
+        function sendConfig() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const threshold = parseFloat(similarityThreshold.value);
+                ws.send(JSON.stringify({
+                    type: 'config',
+                    enable_diarization: enableDiarization.checked,
+                    similarity_threshold: threshold
+                }));
+                debugLog(`Config sent: diarization=${enableDiarization.checked}, threshold=${threshold}`, 'info');
+            }
+        }
+
+        // Update threshold display
+        function updateThresholdDisplay() {
+            thresholdValue.textContent = similarityThreshold.value;
+        }
+
+        // Set status indicator
+        function setStatus(state, text) {
+            statusDot.className = 'status-dot ' + state;
+            statusText.textContent = text;
+        }
+
+        // Show toast message
+        function showToast(message, isError = false) {
+            toast.textContent = message;
+            toast.className = 'toast visible' + (isError ? ' error' : '');
+            setTimeout(() => {
+                toast.className = 'toast';
+            }, 3000);
+        }
+
+        // Show/hide loading overlay
+        function showLoading(text) {
+            loadingText.textContent = text;
+            loadingOverlay.classList.add('visible');
+        }
+
+        function hideLoading() {
+            loadingOverlay.classList.remove('visible');
+        }
+
+        // Track last speaker for grouping
+        let lastSpeakerId = null;
+        let lastMessageDiv = null;
+
+        // Append messages to chat (groups consecutive messages from same speaker)
+        function appendMessages(messages) {
+            // Hide empty state
+            emptyState.style.display = 'none';
+            exportBtn.disabled = false;
+            clearBtn.disabled = false;
+
+            messages.forEach(msg => {
+                // Check if same speaker as last message - group them together
+                if (lastSpeakerId === msg.speaker_id && lastMessageDiv) {
+                    // Append to existing message bubble
+                    const textDiv = lastMessageDiv.querySelector('.text');
+                    if (textDiv) {
+                        // Add space and new text
+                        textDiv.textContent += ' ' + msg.text;
+                        debugLog(`Grouped with previous message from ${msg.speaker}`, 'info');
+                    }
+                } else {
+                    // Create new message bubble
+                    const div = document.createElement('div');
+                    div.className = 'message';
+                    div.style.backgroundColor = msg.color;
+                    div.dataset.speakerId = msg.speaker_id;
+
+                    const timeStr = formatTime(msg.start_time);
+
+                    div.innerHTML = `
+                        <div class="speaker">
+                            <span>${escapeHtml(msg.speaker)}</span>
+                            <span class="time">${timeStr}</span>
+                        </div>
+                        <div class="text">${escapeHtml(msg.text)}</div>
+                    `;
+
+                    chatContainer.appendChild(div);
+                    messageCount++;
+
+                    // Track for grouping
+                    lastSpeakerId = msg.speaker_id;
+                    lastMessageDiv = div;
+                }
+            });
+
+            // Scroll to bottom
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Format time as MM:SS
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Convert Float32Array to WAV
+        function float32ToWav(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            // Write WAV header
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+
+            // Write audio data
+            for (let i = 0; i < samples.length; i++) {
+                const s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+
+            return buffer;
+        }
+
+        // Convert ArrayBuffer to base64 (chunked approach for large buffers)
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            const chunkSize = 0x8000; // 32KB chunks to avoid call stack issues
+            let binary = '';
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+                binary += String.fromCharCode.apply(null, chunk);
+            }
+            return btoa(binary);
+        }
+
+        // Shared microphone stream
+        let micStream = null;
+
+        // Smart chunking configuration
+        const CHUNK_CONFIG = {
+            maxDurationSec: 30,        // Force send after 30 seconds
+            minDurationSec: 1,         // Don't send chunks shorter than 1 second
+            initialSilenceFrames: 16,  // ~1 second initial silence threshold
+            minSilenceFrames: 8,       // Minimum ~0.5 second silence
+            silenceReductionRate: 2,   // Reduce by 2 frames every 10 seconds
+        };
+
+        // Audio state for smart chunking
+        let speechStartTime = null;
+        let maxDurationTimer = null;
+        let currentSilenceFrames = CHUNK_CONFIG.initialSilenceFrames;
+
+        // Send audio chunk to server
+        async function sendAudioChunk(audio, reason) {
+            if (!audio || audio.length < 16000 * CHUNK_CONFIG.minDurationSec) {
+                debugLog(`Skipping short chunk (${(audio.length / 16000).toFixed(2)}s < ${CHUNK_CONFIG.minDurationSec}s min)`, 'warn');
+                return;
+            }
+
+            const durationSec = audio.length / 16000;
+            debugLog(`Chunk ready (${reason}), duration: ${durationSec.toFixed(2)}s`, 'info');
+
+            // Convert to WAV
+            const wavBuffer = float32ToWav(audio, 16000);
+            const sizeKb = wavBuffer.byteLength / 1024;
+            debugLog(`Sending audio chunk: ${sizeKb.toFixed(1)} KB at ${currentChunkStart.toFixed(1)}s`, 'info');
+
+            // Convert to base64 using chunked approach (handles large buffers)
+            const base64 = arrayBufferToBase64(wavBuffer);
+            debugLog(`Base64 encoded: ${(base64.length / 1024).toFixed(1)} KB`, 'info');
+
+            // Send to server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                chunksSent++;
+                statChunksSent.textContent = chunksSent;
+                statLastChunk.textContent = `${durationSec.toFixed(1)}s / ${sizeKb.toFixed(0)}KB`;
+
+                // Update queue estimate
+                const pendingQueue = chunksSent - chunksReceived;
+                statQueueSize.textContent = pendingQueue;
+
+                debugLog(`>>> Sending chunk #${chunksSent}: ${durationSec.toFixed(1)}s audio, ${sizeKb.toFixed(0)}KB, queue: ${pendingQueue}`, 'info');
+                ws.send(JSON.stringify({
+                    type: 'audio_chunk',
+                    data: base64,
+                    chunk_start: currentChunkStart
+                }));
+
+                // Update chunk start time for next chunk
+                currentChunkStart += durationSec;
+            } else {
+                debugLog(`WebSocket not connected (state: ${ws ? ws.readyState : 'null'}), dropping audio chunk`, 'error');
+                updateWsState();
+            }
+        }
+
+        // Force flush VAD buffer by pausing (triggers onSpeechEnd with accumulated audio)
+        async function flushVADBuffer(reason) {
+            const hadSpeech = speechStartTime !== null;
+            const speechDur = speechStartTime ? ((Date.now() - speechStartTime) / 1000).toFixed(1) : '0';
+            debugLog(`🔄 Flushing VAD buffer: ${reason} (had speech: ${hadSpeech}, duration: ${speechDur}s)`, 'info');
+
+            // Clear max duration timer
+            if (maxDurationTimer) {
+                clearTimeout(maxDurationTimer);
+                maxDurationTimer = null;
+            }
+
+            if (vadInstance) {
+                // Pause VAD - this triggers onSpeechEnd if speech was in progress
+                vadInstance.pause();
+                debugLog('VAD paused (should trigger onSpeechEnd if speech was active)', 'info');
+
+                // If still recording (not stopping), restart VAD
+                if (isRecording && reason !== 'recording stopped') {
+                    await vadInstance.start();
+
+                    // Reset speech tracking for next segment
+                    speechStartTime = null;
+                    currentSilenceFrames = CHUNK_CONFIG.initialSilenceFrames;
+                    debugLog('✓ VAD restarted after flush', 'success');
+                }
+            }
+        }
+
+        // Initialize VAD
+        async function initVAD() {
+            try {
+                debugLog('Initializing VAD (Voice Activity Detection)...', 'info');
+
+                // Get microphone stream first (shared with VU meter)
+                try {
+                    debugLog('Requesting microphone access...', 'info');
+
+                    // Add timeout for getUserMedia
+                    const timeoutPromise = new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('Microphone permission timeout (10s)')), 10000)
+                    );
+
+                    micStream = await Promise.race([
+                        navigator.mediaDevices.getUserMedia({ audio: true }),
+                        timeoutPromise
+                    ]);
+                    debugLog(`Got microphone stream: ${micStream.getAudioTracks()[0].label}`, 'success');
+                } catch (micError) {
+                    debugLog(`Microphone access failed: ${micError.message}`, 'error');
+                    throw micError;
+                }
+
+                debugLog('Creating VAD instance with shared stream...', 'info');
+
+                // Check if VAD library is loaded
+                if (typeof vad === 'undefined' || !vad.MicVAD) {
+                    throw new Error('VAD library not loaded. Check network/CORS.');
+                }
+
+                // Configure ONNX runtime for better compatibility
+                if (typeof ort !== 'undefined' && ort.env) {
+                    ort.env.wasm.numThreads = 1;  // Single thread for better compatibility
+                    debugLog('ONNX WASM configured: single thread mode', 'info');
+                }
+
+                vadInstance = await vad.MicVAD.new({
+                    stream: micStream,  // Use shared stream
+                    onSpeechEnd: async (audio) => {
+                        // VAD detected silence or pause() was called - send the audio
+                        const audioDuration = (audio.length / 16000).toFixed(2);
+                        const speechDur = speechStartTime ? ((Date.now() - speechStartTime) / 1000).toFixed(1) : '?';
+                        debugLog(`🎤 Speech ended: ${audioDuration}s audio (speech duration: ${speechDur}s)`, 'success');
+
+                        // Clear max duration timer since we're sending
+                        if (maxDurationTimer) {
+                            clearTimeout(maxDurationTimer);
+                            maxDurationTimer = null;
+                        }
+
+                        // Reset speech tracking
+                        speechStartTime = null;
+                        currentSilenceFrames = CHUNK_CONFIG.initialSilenceFrames;
+
+                        // Send the audio
+                        sendAudioChunk(audio, 'speech end');
+                    },
+                    onSpeechStart: () => {
+                        if (!speechStartTime) {
+                            speechStartTime = Date.now();
+                            debugLog('🎙️ Speech started - recording (max 30s)...', 'success');
+                            // Start max duration timer
+                            maxDurationTimer = setTimeout(() => {
+                                debugLog(`⏱️ Max duration (${CHUNK_CONFIG.maxDurationSec}s) reached, force flushing...`, 'warn');
+                                flushVADBuffer('max duration');
+                            }, CHUNK_CONFIG.maxDurationSec * 1000);
+                        } else {
+                            // Still speaking - show duration
+                            const speechDuration = (Date.now() - speechStartTime) / 1000;
+                            if (speechDuration > 10 && Math.floor(speechDuration) % 10 === 0) {
+                                debugLog(`🎙️ Still speaking: ${speechDuration.toFixed(0)}s...`, 'info');
+                            }
+                        }
+                    },
+                    // More sensitive settings for noisy environments
+                    positiveSpeechThreshold: 0.5,   // Lower = more sensitive to speech
+                    negativeSpeechThreshold: 0.35,  // Lower = needs more silence to end
+                    redemptionFrames: 8,            // Frames to wait before ending speech
+                    minSpeechFrames: 3,             // Minimum speech frames to trigger
+                    preSpeechPadFrames: 5,          // Padding before speech
+                });
+
+                debugLog('VAD initialized successfully', 'success');
+                debugLog(`Chunk config: max=${CHUNK_CONFIG.maxDurationSec}s, silence=${CHUNK_CONFIG.initialSilenceFrames} frames`, 'info');
+                return true;
+            } catch (error) {
+                debugLog(`Failed to initialize VAD: ${error.message}`, 'error');
+                debugLog(`Error stack: ${error.stack}`, 'error');
+                console.error('VAD init error:', error);
+                showToast('Failed to initialize voice detection', true);
+                return false;
+            }
+        }
+
+        // Start recording
+        async function startRecording() {
+            if (isRecording) return;
+
+            debugLog('Starting recording...', 'info');
+
+            try {
+                // Initialize VAD if not already done
+                if (!vadInstance) {
+                    showLoading('Initializing voice detection...');
+                    const success = await initVAD();
+                    hideLoading();
+                    if (!success) return;
+                }
+
+                // Send config update
+                sendConfig();
+
+                // Start VAD
+                debugLog('Starting VAD audio capture...', 'info');
+                await vadInstance.start();
+
+                isRecording = true;
+                recordingStartTime = Date.now();
+                currentChunkStart = 0;
+                chunksSent = 0;
+                chunksReceived = 0;
+                statChunksSent.textContent = '0';
+                statChunksReceived.textContent = '0';
+                statLastChunk.textContent = '--';
+
+                debugLog('Recording started - listening for speech', 'success');
+
+                // Initialize VU meter with shared mic stream
+                if (micStream) {
+                    try {
+                        initVUMeter(micStream);
+                        debugLog('VU meter initialized with shared stream', 'success');
+                    } catch (e) {
+                        debugLog(`Could not init VU meter: ${e.message}`, 'warn');
+                    }
+                } else {
+                    debugLog('No mic stream available for VU meter', 'warn');
+                }
+
+                // Update UI
+                recordBtn.innerHTML = '<span>⏹️</span> Stop Recording';
+                recordBtn.classList.add('recording');
+                setStatus('recording', 'Recording');
+
+                // Start timer
+                timerInterval = setInterval(updateTimer, 1000);
+                updateTimer();
+
+            } catch (error) {
+                debugLog(`Failed to start recording: ${error.message}`, 'error');
+                showToast('Failed to access microphone', true);
+            }
+        }
+
+        // Stop recording
+        async function stopRecording() {
+            if (!isRecording) return;
+
+            debugLog('⏹️ Stopping recording...', 'info');
+
+            // Flush any remaining audio first (this triggers onSpeechEnd if speech was in progress)
+            await flushVADBuffer('recording stopped');
+
+            isRecording = false;
+
+            // Stop VU meter
+            stopVUMeter();
+
+            const pending = chunksSent - chunksReceived;
+            debugLog(`⏹️ Recording stopped. Stats: ${chunksSent} sent, ${chunksReceived} processed, ${pending} pending`, 'success');
+
+            // Update UI
+            recordBtn.innerHTML = '<span>🎤</span> Start Recording';
+            recordBtn.classList.remove('recording');
+            setStatus('connected', 'Ready');
+
+            // Stop timer
+            clearInterval(timerInterval);
+            timer.textContent = '';
+            timer.classList.remove('recording');
+
+            // Show warning if chunks are still pending
+            if (pending > 0) {
+                debugLog(`⚠️ ${pending} chunk(s) still processing on server - results will arrive shortly`, 'warn');
+            }
+        }
+
+        // Update timer display
+        function updateTimer() {
+            if (!recordingStartTime) return;
+
+            const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+
+            timer.textContent = `Recording: ${mins}:${secs.toString().padStart(2, '0')}`;
+            timer.classList.add('recording');
+        }
+
+        // Toggle recording
+        function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        }
+
+        // Export transcript
+        function exportTranscript(format) {
+            exportMenu.classList.remove('visible');
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'export',
+                    format: format
+                }));
+            }
+        }
+
+        // Download file
+        function downloadFile(content, filename) {
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Clear session
+        function clearSession() {
+            if (confirm('Clear all messages?')) {
+                // Clear UI
+                chatContainer.innerHTML = '';
+                chatContainer.appendChild(emptyState);
+                emptyState.style.display = 'flex';
+                messageCount = 0;
+                exportBtn.disabled = true;
+                clearBtn.disabled = true;
+
+                // Reset speaker tracking for grouping
+                lastSpeakerId = null;
+                lastMessageDiv = null;
+
+                // Clear server session
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'clear' }));
+                }
+
+                currentChunkStart = 0;
+            }
+        }
+
+        // Toggle export menu
+        function toggleExportMenu(event) {
+            event.stopPropagation();
+            exportMenu.classList.toggle('visible');
+        }
+
+        // Event listeners
+        recordBtn.addEventListener('click', toggleRecording);
+        exportBtn.addEventListener('click', toggleExportMenu);
+        clearBtn.addEventListener('click', clearSession);
+
+        // Copy debug logs button
+        if (copyLogsBtn) {
+            copyLogsBtn.addEventListener('click', () => {
+                const logText = Array.from(debugLogs.querySelectorAll('.debug-log'))
+                    .map(el => el.textContent)
+                    .join('\n');
+                navigator.clipboard.writeText(logText).then(() => {
+                    copyLogsBtn.textContent = '✓ Copied';
+                    copyLogsBtn.classList.add('copied');
+                    setTimeout(() => {
+                        copyLogsBtn.textContent = '📋 Copy';
+                        copyLogsBtn.classList.remove('copied');
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Failed to copy:', err);
+                    showToast('Failed to copy logs', true);
+                });
+            });
+        }
+
+        // Close export menu when clicking elsewhere
+        document.addEventListener('click', () => {
+            exportMenu.classList.remove('visible');
+        });
+
+        // Update config when diarization checkbox changes
+        enableDiarization.addEventListener('change', sendConfig);
+
+        // Update config when similarity threshold changes
+        similarityThreshold.addEventListener('input', updateThresholdDisplay);
+        similarityThreshold.addEventListener('change', sendConfig);
+
+        // Initialize
+        connectWebSocket();
+    </script>
+</body>
+</html>

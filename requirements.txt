@@ -2,6 +2,7 @@
 parakeet-mlx>=0.3.0
 flask>=2.3.0
 flask-cors>=4.0.0
+flask-sock>=0.6.0
 gradio>=4.19.0
 
 # Audio processing
@@ -17,7 +18,7 @@ pyannote.audio>=3.1.0,<4.0
 # Data & visualization
 pandas>=2.0.0
 matplotlib>=3.7.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.4  # Numba requires NumPy <2.4
 
 # HTTP client
 requests>=2.31.0
