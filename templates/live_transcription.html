@@ -24,12 +24,16 @@
         header {
             background: #2196F3;
             color: white;
-            padding: 1rem;
+            padding: 0.75rem 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 10;
+        }
+
+        .header-top {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            z-index: 10;
+            margin-bottom: 0.5rem;
         }
 
         header h1 {
@@ -68,6 +72,73 @@
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
+        }
+
+        /* Header controls bar */
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .header-control {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+        }
+
+        .header-control label {
+            opacity: 0.9;
+        }
+
+        .header-control select {
+            font-size: 0.8rem;
+            padding: 0.3rem 0.5rem;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px;
+            background: rgba(255,255,255,0.15);
+            color: white;
+            cursor: pointer;
+        }
+
+        .header-control select:focus {
+            outline: none;
+            border-color: rgba(255,255,255,0.6);
+            background: rgba(255,255,255,0.25);
+        }
+
+        .header-control select option {
+            color: #333;
+            background: white;
+        }
+
+        /* Read-only controls (controlled by menu bar) */
+        .header-control.readonly select {
+            cursor: default;
+            opacity: 0.85;
+            pointer-events: none;
+        }
+
+        .header-control.readonly::after {
+            content: '🔒';
+            font-size: 0.7rem;
+            margin-left: 0.3rem;
+            opacity: 0.7;
+        }
+
+        .menu-bar-hint {
+            font-size: 0.7rem;
+            opacity: 0.7;
+            margin-left: 0.5rem;
+            font-style: italic;
+        }
+
+        .model-info {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            margin-left: auto;
         }
 
         /* Chat container */
@@ -231,11 +302,11 @@
             background: #f9f9f9;
             padding: 0.75rem 1rem;
             border-top: 1px solid #eee;
-            display: none;
+            display: block;
         }
 
-        .settings-panel.visible {
-            display: block;
+        .settings-panel.hidden {
+            display: none;
         }
 
         .setting-row {
@@ -254,9 +325,24 @@
             color: #333;
         }
 
-        .setting-row select,
-        .setting-row input[type="checkbox"] {
+        .setting-row select {
             font-size: 0.9rem;
+            padding: 0.4rem 0.6rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+        }
+
+        .setting-row select:focus {
+            outline: none;
+            border-color: #2196F3;
+        }
+
+        .setting-row input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
         }
 
         .slider-container {
@@ -591,10 +677,29 @@
 </head>
 <body>
     <header>
-        <h1>Live Transcription</h1>
-        <div class="status-indicator">
-            <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">Connecting...</span>
+        <div class="header-top">
+            <h1>Live Transcription</h1>
+            <div class="status-indicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+        <div class="header-controls">
+            <div class="header-control readonly" title="Controlled by menu bar app">
+                <label>Provider:</label>
+                <select id="providerSelect" disabled>
+                    <option value="parakeet">Parakeet-MLX (Local)</option>
+                    <option value="deepgram">Deepgram (Cloud)</option>
+                </select>
+            </div>
+            <div class="header-control readonly" id="modelSelectContainer" title="Controlled by menu bar app">
+                <label>Model:</label>
+                <select id="modelSelect" disabled>
+                    <option value="mlx-community/parakeet-tdt-0.6b-v3">parakeet-tdt-0.6b</option>
+                </select>
+            </div>
+            <span class="menu-bar-hint">(via menu bar)</span>
+            <span class="model-info" id="modelInfo"></span>
         </div>
     </header>
 
@@ -602,9 +707,15 @@
     <div class="debug-panel" id="debugPanel">
         <div class="debug-header">
             <h3>🔧 Debug Console</h3>
-            <button class="copy-logs-btn" id="copyLogsBtn" title="Copy logs to clipboard">📋 Copy</button>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="copy-logs-btn" id="injectAudioBtn" title="Inject test audio file">🧪 Inject Audio</button>
+                <button class="copy-logs-btn" id="injectSampleBtn" title="Inject built-in sample conversation">💬 Sample Conv</button>
+                <button class="copy-logs-btn" id="copyLogsBtn" title="Copy logs to clipboard">📋 Copy</button>
+            </div>
             <span class="debug-model" id="debugModel">Model: loading...</span>
         </div>
+        <!-- Hidden file input for audio injection -->
+        <input type="file" id="audioFileInput" accept="audio/*" style="display: none;">
         <!-- VU Meter -->
         <div class="vu-meter-container visible" id="vuMeterContainer">
             <span class="vu-meter-label">Level:</span>
@@ -655,11 +766,11 @@
 
     <div class="settings-panel" id="settingsPanel">
         <div class="setting-row">
-            <label>Speaker Identification</label>
+            <label>Speaker Diarization</label>
             <input type="checkbox" id="enableDiarization" checked>
         </div>
-        <div class="setting-row">
-            <label>Speaker Match Sensitivity</label>
+        <div class="setting-row parakeet-only" id="thresholdRow">
+            <label>Cross-chunk Speaker Match</label>
             <div class="slider-container">
                 <input type="range" id="similarityThreshold" min="0.2" max="0.8" step="0.05" value="0.45">
                 <span id="thresholdValue">0.45</span>
@@ -701,7 +812,7 @@
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.18/dist/bundle.min.js"></script>
 
-    <!-- Cache buster: v15-20251229-threshold-slider -->
+    <!-- Cache buster: v22-20251230-streaming-injection -->
     <script>
         // State
         let ws = null;
@@ -745,11 +856,20 @@
         const enableDiarization = document.getElementById('enableDiarization');
         const similarityThreshold = document.getElementById('similarityThreshold');
         const thresholdValue = document.getElementById('thresholdValue');
+        const providerSelect = document.getElementById('providerSelect');
+        const modelSelect = document.getElementById('modelSelect');
+        const modelSelectContainer = document.getElementById('modelSelectContainer');
+        const modelInfo = document.getElementById('modelInfo');
+        const thresholdRow = document.getElementById('thresholdRow');
+        const settingsPanel = document.getElementById('settingsPanel');
         const debugPanel = document.getElementById('debugPanel');
         const debugLogs = document.getElementById('debugLogs');
         const debugModel = document.getElementById('debugModel');
         const debugToggle = document.getElementById('debugToggle');
         const copyLogsBtn = document.getElementById('copyLogsBtn');
+        const injectAudioBtn = document.getElementById('injectAudioBtn');
+        const injectSampleBtn = document.getElementById('injectSampleBtn');
+        const audioFileInput = document.getElementById('audioFileInput');
 
         // VU meter elements
         const vuMeterBar = document.getElementById('vuMeterBar');
@@ -767,7 +887,7 @@
             debugPanel.classList.add('visible');
             debugToggle.classList.add('visible');
             document.body.classList.add('debug-mode');
-            debugLog('Debug mode enabled (v16 - fixed AudioDecoder)', 'info');
+            debugLog('Debug mode enabled (v20 - audio injection)', 'info');
 
             // Check if required libraries are loaded
             if (typeof ort === 'undefined') {
@@ -939,17 +1059,33 @@
                 case 'connected':
                     sessionId = data.session_id;
                     modelName = data.model_name || 'unknown';
+                    const currentProvider = data.provider || 'parakeet';
+                    const providerName = data.provider_name || currentProvider;
                     const diarAvailable = data.diarization_available ? 'YES' : 'NO';
                     const diarEnabled = data.diarization_enabled ? 'YES' : 'NO';
                     debugLog(`Session ID: ${sessionId}`, 'success');
+                    debugLog(`Provider: ${providerName}`, 'info');
                     debugLog(`Model: ${modelName}`, 'info');
                     debugLog(`Diarization: enabled=${diarEnabled}, available=${diarAvailable}`, data.diarization_available ? 'success' : 'warn');
                     if (!data.diarization_available) {
                         debugLog('⚠️ Diarization not available - check server logs for details', 'error');
                     }
-                    debugModel.textContent = `Model: ${modelName}`;
-                    // Send initial config
+                    debugModel.textContent = `${providerName} | ${modelName}`;
+                    // Set provider dropdown to match server config
+                    providerSelect.value = currentProvider;
+                    updateProviderUI();
+                    // Send initial config (don't include provider since we just got it from server)
                     sendConfig();
+                    break;
+
+                case 'provider_changed':
+                    const newProvider = data.provider;
+                    const newProviderName = data.provider_name;
+                    debugLog(`✓ Provider changed to: ${newProviderName}`, 'success');
+                    providerSelect.value = newProvider;
+                    updateProviderUI();
+                    debugModel.textContent = `${newProviderName}`;
+                    showToast(`Switched to ${newProviderName}`);
                     break;
 
                 case 'status':
@@ -999,14 +1135,53 @@
 
         // Send configuration
         function sendConfig() {
+            // Provider and model are controlled by menu bar app
+            // We only send diarization settings here
             if (ws && ws.readyState === WebSocket.OPEN) {
                 const threshold = parseFloat(similarityThreshold.value);
-                ws.send(JSON.stringify({
+                const config = {
                     type: 'config',
                     enable_diarization: enableDiarization.checked,
                     similarity_threshold: threshold
-                }));
+                };
+                ws.send(JSON.stringify(config));
                 debugLog(`Config sent: diarization=${enableDiarization.checked}, threshold=${threshold}`, 'info');
+            }
+        }
+
+        // Provider/model configurations
+        const PROVIDER_MODELS = {
+            parakeet: [
+                { id: 'mlx-community/parakeet-tdt-0.6b-v3', name: 'Parakeet TDT 0.6B v3' },
+                { id: 'mlx-community/parakeet-tdt-1.1b', name: 'Parakeet TDT 1.1B' },
+            ],
+            deepgram: [
+                { id: 'nova-2', name: 'Nova-2 (General)' },
+                { id: 'nova-2-meeting', name: 'Nova-2 Meeting' },
+                { id: 'nova-2-phonecall', name: 'Nova-2 Phone' },
+            ]
+        };
+
+        // Update UI based on provider
+        function updateProviderUI() {
+            const provider = providerSelect.value;
+            const isParakeet = provider === 'parakeet';
+
+            // Update model dropdown options
+            const models = PROVIDER_MODELS[provider] || [];
+            modelSelect.innerHTML = models.map(m =>
+                `<option value="${m.id}">${m.name}</option>`
+            ).join('');
+
+            // Show/hide settings based on provider
+            // Cross-chunk speaker matching only applies to Parakeet
+            thresholdRow.style.display = isParakeet ? 'flex' : 'none';
+
+            // Update model info text
+            if (isParakeet) {
+                modelInfo.textContent = 'Local MLX inference';
+            } else {
+                modelInfo.textContent = 'Cloud API';
             }
         }
 
@@ -1531,17 +1706,247 @@
             });
         }
 
+        // === Debug Audio Injection ===
+
+        // Inject audio from file
+        if (injectAudioBtn) {
+            injectAudioBtn.addEventListener('click', () => {
+                audioFileInput.click();
+            });
+        }
+
+        // Handle file selection for audio injection - STREAMING mode
+        if (audioFileInput) {
+            audioFileInput.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                // Don't allow if already streaming
+                if (isStreamingInjection) {
+                    showToast('Already streaming - stop first', true);
+                    audioFileInput.value = '';
+                    return;
+                }
+
+                debugLog(`📁 Loading audio file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'info');
+
+                try {
+                    // Read file as ArrayBuffer
+                    const arrayBuffer = await file.arrayBuffer();
+
+                    // Decode audio using Web Audio API
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+                    debugLog(`🎵 Decoded: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.sampleRate}Hz, ${audioBuffer.numberOfChannels}ch`, 'info');
+
+                    // Convert to mono 16kHz Float32Array
+                    const targetSampleRate = 16000;
+                    const mono = audioBuffer.numberOfChannels > 1
+                        ? mixToMono(audioBuffer)
+                        : audioBuffer.getChannelData(0);
+
+                    // Resample if needed
+                    let audio;
+                    if (audioBuffer.sampleRate !== targetSampleRate) {
+                        audio = resampleAudio(mono, audioBuffer.sampleRate, targetSampleRate);
+                        debugLog(`🔄 Resampled from ${audioBuffer.sampleRate}Hz to ${targetSampleRate}Hz`, 'info');
+                    } else {
+                        audio = mono;
+                    }
+
+                    // Stream audio in chunks (simulates microphone behavior)
+                    await streamAudioChunks(audio, file.name);
+
+                } catch (err) {
+                    debugLog(`❌ Error processing audio: ${err.message}`, 'error');
+                    showToast('Failed to process audio file', true);
+                }
+
+                // Reset input for re-selection
+                audioFileInput.value = '';
+            });
+        }
+
+        // Inject built-in sample conversation (2 people speaking French) - STREAMING mode
+        if (injectSampleBtn) {
+            injectSampleBtn.addEventListener('click', async () => {
+                // If already streaming, stop it
+                if (isStreamingInjection) {
+                    stopStreamingInjection();
+                    return;
+                }
+
+                const sampleUrl = '/static/test/2ppl-FR.mp3';
+                debugLog(`🧪 Loading sample conversation: ${sampleUrl}`, 'info');
+
+                try {
+                    // Fetch the sample audio file
+                    const response = await fetch(sampleUrl);
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+                    }
+
+                    const arrayBuffer = await response.arrayBuffer();
+                    debugLog(`📁 Loaded ${(arrayBuffer.byteLength / 1024).toFixed(1)} KB`, 'info');
+
+                    // Decode audio using Web Audio API
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+                    debugLog(`🎵 Decoded: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.sampleRate}Hz, ${audioBuffer.numberOfChannels}ch`, 'info');
+
+                    // Convert to mono 16kHz Float32Array
+                    const targetSampleRate = 16000;
+                    const mono = audioBuffer.numberOfChannels > 1
+                        ? mixToMono(audioBuffer)
+                        : audioBuffer.getChannelData(0);
+
+                    // Resample if needed
+                    let audio;
+                    if (audioBuffer.sampleRate !== targetSampleRate) {
+                        audio = resampleAudio(mono, audioBuffer.sampleRate, targetSampleRate);
+                        debugLog(`🔄 Resampled from ${audioBuffer.sampleRate}Hz to ${targetSampleRate}Hz`, 'info');
+                    } else {
+                        audio = mono;
+                    }
+
+                    // Stream audio in chunks (simulates microphone behavior)
+                    await streamAudioChunks(audio, '2ppl-FR.mp3');
+
+                } catch (err) {
+                    debugLog(`❌ Error loading sample: ${err.message}`, 'error');
+                    showToast('Failed to load sample audio', true);
+                }
+            });
+        }
+
+        // Helper: Mix stereo to mono
+        function mixToMono(audioBuffer) {
+            const left = audioBuffer.getChannelData(0);
+            const right = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : left;
+            const mono = new Float32Array(left.length);
+            for (let i = 0; i < left.length; i++) {
+                mono[i] = (left[i] + right[i]) / 2;
+            }
+            return mono;
+        }
+
+        // Helper: Simple linear resampling
+        function resampleAudio(input, fromRate, toRate) {
+            const ratio = fromRate / toRate;
+            const outputLength = Math.floor(input.length / ratio);
+            const output = new Float32Array(outputLength);
+
+            for (let i = 0; i < outputLength; i++) {
+                const srcIndex = i * ratio;
+                const srcIndexFloor = Math.floor(srcIndex);
+                const srcIndexCeil = Math.min(srcIndexFloor + 1, input.length - 1);
+                const t = srcIndex - srcIndexFloor;
+                output[i] = input[srcIndexFloor] * (1 - t) + input[srcIndexCeil] * t;
+            }
+
+            return output;
+        }
+
+        // === Streaming Audio Injection (simulates microphone chunks) ===
+
+        // Streaming configuration
+        const STREAM_CONFIG = {
+            chunkDurationSec: 8,    // Chunk size in seconds (like VAD would produce)
+            delayBetweenChunks: 500, // Delay between chunks in ms (simulate real-time gap)
+            sampleRate: 16000       // Target sample rate
+        };
+
+        let isStreamingInjection = false;
+        let streamingAbortController = null;
+
+        // Stream audio in chunks (simulates microphone streaming)
+        async function streamAudioChunks(audio, sourceName) {
+            const totalSamples = audio.length;
+            const samplesPerChunk = STREAM_CONFIG.chunkDurationSec * STREAM_CONFIG.sampleRate;
+            const totalDuration = totalSamples / STREAM_CONFIG.sampleRate;
+            const numChunks = Math.ceil(totalSamples / samplesPerChunk);
+
+            debugLog(`📡 Starting streaming injection: ${totalDuration.toFixed(1)}s → ${numChunks} chunks of ~${STREAM_CONFIG.chunkDurationSec}s`, 'info');
+
+            isStreamingInjection = true;
+            streamingAbortController = new AbortController();
+
+            // Update button to show streaming state
+            if (injectSampleBtn) {
+                injectSampleBtn.textContent = '⏹️ Stop';
+                injectSampleBtn.title = 'Stop streaming injection';
+            }
+
+            try {
+                for (let i = 0; i < numChunks; i++) {
+                    // Check if aborted
+                    if (streamingAbortController.signal.aborted) {
+                        debugLog(`⏹️ Streaming stopped by user at chunk ${i + 1}/${numChunks}`, 'warn');
+                        break;
+                    }
+
+                    const startSample = i * samplesPerChunk;
+                    const endSample = Math.min(startSample + samplesPerChunk, totalSamples);
+                    const chunkAudio = audio.slice(startSample, endSample);
+
+                    const chunkDuration = chunkAudio.length / STREAM_CONFIG.sampleRate;
+                    const progress = ((i + 1) / numChunks * 100).toFixed(0);
+
+                    debugLog(`📤 Streaming chunk ${i + 1}/${numChunks} (${chunkDuration.toFixed(1)}s) - ${progress}%`, 'info');
+
+                    // Send the chunk
+                    await sendAudioChunk(chunkAudio, `stream chunk ${i + 1}/${numChunks}`);
+
+                    // Wait between chunks (simulate real-time gap + processing time)
+                    if (i < numChunks - 1 && !streamingAbortController.signal.aborted) {
+                        await new Promise(resolve => setTimeout(resolve, STREAM_CONFIG.delayBetweenChunks));
+                    }
+                }
+
+                if (!streamingAbortController.signal.aborted) {
+                    debugLog(`✅ Streaming complete: ${numChunks} chunks sent for "${sourceName}"`, 'success');
+                    showToast(`Streamed: ${sourceName} (${numChunks} chunks)`);
+                }
+            } finally {
+                isStreamingInjection = false;
+                streamingAbortController = null;
+
+                // Reset button
+                if (injectSampleBtn) {
+                    injectSampleBtn.textContent = '💬 Sample Conv';
+                    injectSampleBtn.title = 'Inject built-in sample conversation';
+                }
+            }
+        }
+
+        // Stop streaming injection
+        function stopStreamingInjection() {
+            if (streamingAbortController) {
+                streamingAbortController.abort();
+                showToast('Streaming stopped');
+            }
+        }
+
         // Close export menu when clicking elsewhere
         document.addEventListener('click', () => {
             exportMenu.classList.remove('visible');
         });
 
+        // Provider and model are now read-only (controlled by menu bar app)
+        // The values are set from the server's 'connected' message
+        // No change event listeners needed since selects are disabled
+
         // Update config when diarization checkbox changes
-        enableDiarization.addEventListener('change', sendConfig);
+        enableDiarization.addEventListener('change', () => sendConfig());
 
         // Update config when similarity threshold changes
         similarityThreshold.addEventListener('input', updateThresholdDisplay);
-        similarityThreshold.addEventListener('change', sendConfig);
+        similarityThreshold.addEventListener('change', () => sendConfig());
+
+        // Initialize provider UI on page load
+        updateProviderUI();
 
         // Initialize
         connectWebSocket();

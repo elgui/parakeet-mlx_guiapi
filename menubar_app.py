@@ -177,6 +177,56 @@ AVAILABLE_MODELS = [
     },
 ]
 
+# Available STT providers
+AVAILABLE_PROVIDERS = [
+    {
+        "id": "parakeet",
+        "name": "Parakeet-MLX (Local)",
+        "description": "Local transcription on Apple Silicon",
+        "requires_api_key": False,
+        "models": AVAILABLE_MODELS,  # Uses the AVAILABLE_MODELS list
+    },
+    {
+        "id": "deepgram",
+        "name": "Deepgram (Cloud)",
+        "description": "Cloud-based high-accuracy transcription",
+        "requires_api_key": True,
+        "models": [
+            # Nova-3 models (latest, best accuracy)
+            {"id": "nova-3", "name": "Nova-3 (General)", "description": "Latest, best accuracy", "category": "Nova-3"},
+            {"id": "nova-3-meeting", "name": "Nova-3 Meeting", "description": "Meetings & conferences", "category": "Nova-3"},
+            {"id": "nova-3-phonecall", "name": "Nova-3 Phone", "description": "Phone calls", "category": "Nova-3"},
+            {"id": "nova-3-voicemail", "name": "Nova-3 Voicemail", "description": "Voicemails", "category": "Nova-3"},
+            {"id": "nova-3-finance", "name": "Nova-3 Finance", "description": "Finance terminology", "category": "Nova-3"},
+            {"id": "nova-3-medical", "name": "Nova-3 Medical", "description": "Medical terminology", "category": "Nova-3"},
+            # Nova-2 models (still excellent)
+            {"id": "nova-2", "name": "Nova-2 (General)", "description": "Proven general-purpose", "category": "Nova-2"},
+            {"id": "nova-2-meeting", "name": "Nova-2 Meeting", "description": "Meetings", "category": "Nova-2"},
+            {"id": "nova-2-phonecall", "name": "Nova-2 Phone", "description": "Phone calls", "category": "Nova-2"},
+            {"id": "nova-2-voicemail", "name": "Nova-2 Voicemail", "description": "Voicemails", "category": "Nova-2"},
+            {"id": "nova-2-finance", "name": "Nova-2 Finance", "description": "Finance", "category": "Nova-2"},
+            {"id": "nova-2-medical", "name": "Nova-2 Medical", "description": "Medical", "category": "Nova-2"},
+        ],
+        # Deepgram-specific configurable options
+        "options": {
+            "smart_format": {"name": "Smart Format", "description": "Auto-capitalize, format numbers", "default": True},
+            "punctuate": {"name": "Punctuation", "description": "Add punctuation marks", "default": True},
+            "paragraphs": {"name": "Paragraphs", "description": "Group text into paragraphs", "default": True},
+            "profanity_filter": {"name": "Profanity Filter", "description": "Filter profane words", "default": False},
+            "numerals": {"name": "Numerals", "description": "Convert numbers to digits", "default": False},
+        },
+    },
+]
+
+
+def get_provider_by_id(provider_id):
+    """Get provider dict by its ID."""
+    for provider in AVAILABLE_PROVIDERS:
+        if provider["id"] == provider_id:
+            return provider
+    return None
+
+
 # Group models by category for menu display
 def get_models_by_category():
     """Group models by their category."""
@@ -282,6 +332,10 @@ class ParakeetMenuBarApp(rumps.App):
         self.server_menu = rumps.MenuItem("🌐 Server")
         self._populate_server_menu()
 
+        # === Provider Selection ===
+        self.provider_menu = rumps.MenuItem("🔊 Provider")
+        self._populate_provider_menu()
+
         # === Model Selection ===
         self.model_menu = rumps.MenuItem("🤖 Model")
         self._populate_model_menu()
@@ -307,6 +361,7 @@ class ParakeetMenuBarApp(rumps.App):
             self.status_item,
             None,
             self.server_menu,
+            self.provider_menu,
             self.model_menu,
             self.settings_menu,
             self.history_menu,
@@ -380,8 +435,180 @@ class ParakeetMenuBarApp(rumps.App):
             del self.server_menu[key]
         self._populate_server_menu()
 
+    def _populate_provider_menu(self):
+        """Populate the STT provider selection menu - simple flat list."""
+        current_provider = self.config.get("stt_provider", "parakeet")
+
+        # Simple flat list of providers (like radio buttons)
+        for provider in AVAILABLE_PROVIDERS:
+            is_selected = provider["id"] == current_provider
+            title = provider["name"]
+            if is_selected:
+                title = f"✓ {title}"
+
+            self.provider_menu.add(rumps.MenuItem(
+                title,
+                callback=lambda _, p=provider: self.select_provider(p)
+            ))
+
+        # Show current provider info
+        self.provider_menu.add(None)
+        current = get_provider_by_id(current_provider)
+        if current:
+            self.provider_menu.add(rumps.MenuItem(f"📝 {current['description']}"))
+
+    def _refresh_provider_menu(self):
+        """Refresh the provider menu."""
+        keys = list(self.provider_menu.keys())
+        for key in keys:
+            del self.provider_menu[key]
+        self._populate_provider_menu()
+
+    def select_provider(self, provider):
+        """Switch to a different STT provider."""
+        if self.recording or self.processing:
+            rumps.notification(
+                title="Cannot Change Provider",
+                subtitle="",
+                message="Please wait until current operation completes",
+                sound=False
+            )
+            return
+
+        provider_id = provider["id"]
+
+        # For Deepgram, check API key
+        if provider_id == "deepgram":
+            api_key = self.config.get("deepgram_api_key", "")
+            if not api_key:
+                response = rumps.alert(
+                    title="API Key Required",
+                    message="Deepgram requires an API key to function.\n\nWould you like to configure it now?",
+                    ok="Configure",
+                    cancel="Cancel"
+                )
+                if response == 1:
+                    self.configure_deepgram_api_key(None)
+                return
+
+        # Update config
+        self.config["stt_provider"] = provider_id
+        save_config(self.config)
+
+        # Refresh menus
+        self._refresh_provider_menu()
+        self._refresh_model_menu()
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Provider Changed",
+                subtitle="",
+                message=f"Now using {provider['name']}",
+                sound=False
+            )
+
+        logger.info(f"Switched to provider: {provider_id}")
+
+    def select_deepgram_model(self, model):
+        """Select a Deepgram model."""
+        self.config["deepgram_model"] = model["id"]
+        save_config(self.config)
+        self._refresh_model_menu()
+
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Model Changed",
+                subtitle="",
+                message=f"Deepgram model: {model['name']}",
+                sound=False
+            )
+
+        logger.info(f"Selected Deepgram model: {model['id']}")
+
+    def configure_deepgram_api_key(self, _):
+        """Configure Deepgram API key."""
+        current_key = self.config.get("deepgram_api_key", "")
+
+        # Use rumps.Window for text input
+        window = rumps.Window(
+            title="Deepgram API Key",
+            message="Enter your Deepgram API key.\n\nGet a free key at: console.deepgram.com",
+            default_text=current_key,
+            ok="Save",
+            cancel="Cancel",
+            dimensions=(320, 24)
+        )
+
+        # Add a button to open the console
+        response = window.run()
+
+        if response.clicked:
+            new_key = response.text.strip()
+            if new_key:
+                self.config["deepgram_api_key"] = new_key
+                save_config(self.config)
+                self._refresh_provider_menu()
+
+                if self.config.get("show_notifications", True):
+                    rumps.notification(
+                        title="API Key Saved",
+                        subtitle="",
+                        message="Deepgram API key has been configured",
+                        sound=False
+                    )
+                logger.info("Deepgram API key saved")
+            else:
+                rumps.alert(
+                    title="No Key Entered",
+                    message="API key was not saved because no key was entered."
+                )
+
+    def open_deepgram_console(self, _):
+        """Open Deepgram console in browser."""
+        webbrowser.open("https://console.deepgram.com")
+
+    def configure_huggingface_token(self, _):
+        """Configure HuggingFace token for diarization."""
+        current_token = self.config.get("huggingface_token", "")
+
+        window = rumps.Window(
+            title="HuggingFace Token",
+            message="Enter your HuggingFace token.\n\nRequired for speaker diarization.\nGet a token at: huggingface.co/settings/tokens",
+            default_text=current_token,
+            ok="Save",
+            cancel="Cancel",
+            dimensions=(320, 24)
+        )
+
+        response = window.run()
+
+        if response.clicked:
+            new_token = response.text.strip()
+            if new_token:
+                self.config["huggingface_token"] = new_token
+                save_config(self.config)
+                self._refresh_settings_menu()
+
+                if self.config.get("show_notifications", True):
+                    rumps.notification(
+                        title="Token Saved",
+                        subtitle="",
+                        message="HuggingFace token has been configured",
+                        sound=False
+                    )
+                logger.info("HuggingFace token saved")
+
     def _populate_model_menu(self):
-        """Populate the model selection menu organized by category."""
+        """Populate the model selection menu based on current provider."""
+        current_provider = self.config.get("stt_provider", "parakeet")
+
+        if current_provider == "parakeet":
+            self._populate_parakeet_models()
+        elif current_provider == "deepgram":
+            self._populate_deepgram_models()
+
+    def _populate_parakeet_models(self):
+        """Populate Parakeet model menu organized by category."""
         current_model = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
         categories = get_models_by_category()
 
@@ -441,6 +668,40 @@ class ParakeetMenuBarApp(rumps.App):
                 for feat in features:
                     feat_menu.add(rumps.MenuItem(f"• {feat}"))
                 self.model_menu.add(feat_menu)
+
+    def _populate_deepgram_models(self):
+        """Populate Deepgram model menu."""
+        current_model = self.config.get("deepgram_model", "nova-2")
+        deepgram_provider = get_provider_by_id("deepgram")
+
+        if not deepgram_provider:
+            return
+
+        # List all Deepgram models
+        for model in deepgram_provider["models"]:
+            title = model["name"]
+            if model["id"] == current_model:
+                title = f"✓ {title}"
+
+            self.model_menu.add(rumps.MenuItem(
+                title,
+                callback=lambda _, m=model: self.select_deepgram_model(m)
+            ))
+
+        # Add separator and current model info
+        self.model_menu.add(None)
+
+        # Find current model info
+        current = None
+        for m in deepgram_provider["models"]:
+            if m["id"] == current_model:
+                current = m
+                break
+
+        if current:
+            self.model_menu.add(rumps.MenuItem(f"Current: {current['name']}"))
+            if current.get("description"):
+                self.model_menu.add(rumps.MenuItem(f"📝 {current['description']}"))
 
     def _get_model_by_id(self, model_id):
         """Get model dict by its ID."""
@@ -547,6 +808,23 @@ class ParakeetMenuBarApp(rumps.App):
         self.settings_menu.add(diarize_menu)
         self.settings_menu.add(None)
 
+        # === Provider-specific options ===
+        current_provider = self.config.get("stt_provider", "parakeet")
+
+        # Deepgram Options (only show when Deepgram is selected)
+        if current_provider == "deepgram":
+            deepgram_options_menu = rumps.MenuItem("🔧 Deepgram Options")
+            self._populate_deepgram_options_menu(deepgram_options_menu)
+            self.settings_menu.add(deepgram_options_menu)
+            self.settings_menu.add(None)
+
+        # === Chunk duration options (for Parakeet) ===
+        if current_provider == "parakeet":
+            parakeet_options_menu = rumps.MenuItem("🔧 Parakeet Options")
+            self._populate_parakeet_options_menu(parakeet_options_menu)
+            self.settings_menu.add(parakeet_options_menu)
+            self.settings_menu.add(None)
+
         # === Chunk duration options ===
         chunk_menu = rumps.MenuItem("Chunk Duration")
         chunk_options = [30, 60, 120, 180, 300]
@@ -575,6 +853,39 @@ class ParakeetMenuBarApp(rumps.App):
         notif_title = "✓ Show Notifications" if show_notif else "Show Notifications"
         notif_item = rumps.MenuItem(notif_title, callback=self.toggle_notifications)
         self.settings_menu.add(notif_item)
+
+        # === Microphone Selection ===
+        self.settings_menu.add(None)
+        mic_menu = rumps.MenuItem("🎙️ Microphone")
+        self._populate_microphone_menu(mic_menu)
+        self.settings_menu.add(mic_menu)
+
+        # === API Keys section ===
+        self.settings_menu.add(None)
+        api_keys_menu = rumps.MenuItem("🔑 API Keys")
+
+        # Deepgram API key
+        deepgram_key = self.config.get("deepgram_api_key", "")
+        if deepgram_key:
+            key_preview = deepgram_key[:8] + "..." if len(deepgram_key) > 8 else deepgram_key
+            api_keys_menu.add(rumps.MenuItem(f"Deepgram: {key_preview}"))
+        else:
+            api_keys_menu.add(rumps.MenuItem("Deepgram: Not configured"))
+        api_keys_menu.add(rumps.MenuItem("Configure Deepgram Key...", callback=self.configure_deepgram_api_key))
+        api_keys_menu.add(rumps.MenuItem("Get Deepgram Key", callback=self.open_deepgram_console))
+
+        api_keys_menu.add(None)
+
+        # HuggingFace token (for diarization)
+        hf_token = self.config.get("huggingface_token", "")
+        if hf_token:
+            token_preview = hf_token[:8] + "..." if len(hf_token) > 8 else hf_token
+            api_keys_menu.add(rumps.MenuItem(f"HuggingFace: {token_preview}"))
+        else:
+            api_keys_menu.add(rumps.MenuItem("HuggingFace: Not configured"))
+        api_keys_menu.add(rumps.MenuItem("Configure HuggingFace Token...", callback=self.configure_huggingface_token))
+
+        self.settings_menu.add(api_keys_menu)
 
         # === Advanced section ===
         self.settings_menu.add(None)
@@ -614,6 +925,203 @@ class ParakeetMenuBarApp(rumps.App):
 
         self.settings_menu.add(advanced_menu)
 
+    def _populate_deepgram_options_menu(self, menu):
+        """Populate the Deepgram options submenu."""
+        # Get Deepgram provider info
+        deepgram_provider = get_provider_by_id("deepgram")
+        if not deepgram_provider:
+            return
+
+        options = deepgram_provider.get("options", {})
+        current_options = self.config.get("deepgram_options", {})
+
+        # Add header
+        menu.add(rumps.MenuItem("Formatting Options:"))
+        menu.add(None)
+
+        # Add toggleable options
+        for opt_key, opt_info in options.items():
+            # Get current value (default from provider definition)
+            is_enabled = current_options.get(opt_key, opt_info.get("default", False))
+            title = f"{'✓ ' if is_enabled else ''}{opt_info['name']}"
+            menu.add(rumps.MenuItem(
+                title,
+                callback=lambda _, k=opt_key: self.toggle_deepgram_option(k)
+            ))
+
+        # Add info about what these options do
+        menu.add(None)
+        menu.add(rumps.MenuItem("ℹ️ Changes apply to next transcription"))
+
+    def toggle_deepgram_option(self, option_key):
+        """Toggle a Deepgram option."""
+        # Get current options
+        current_options = self.config.get("deepgram_options", {})
+
+        # Get default from provider definition
+        deepgram_provider = get_provider_by_id("deepgram")
+        options = deepgram_provider.get("options", {})
+        default_value = options.get(option_key, {}).get("default", False)
+
+        # Toggle the option
+        current_value = current_options.get(option_key, default_value)
+        current_options[option_key] = not current_value
+
+        # Save to config
+        self.config["deepgram_options"] = current_options
+        save_config(self.config)
+
+        # Refresh the settings menu
+        self._refresh_settings_menu()
+
+        # Show notification
+        option_name = options.get(option_key, {}).get("name", option_key)
+        status = "enabled" if current_options[option_key] else "disabled"
+        logger.info(f"Deepgram option '{option_name}' {status}")
+
+    def _populate_parakeet_options_menu(self, menu):
+        """Populate the Parakeet options submenu."""
+        # Chunk duration submenu
+        chunk_menu = rumps.MenuItem("Chunk Duration")
+        chunk_options = [30, 60, 120, 180, 300]
+        current_chunk = self.config.get("default_chunk_duration", 120)
+
+        for duration in chunk_options:
+            title = f"{duration}s"
+            if duration == current_chunk:
+                title = f"✓ {title}"
+            chunk_menu.add(rumps.MenuItem(
+                title,
+                callback=lambda _, d=duration: self.set_chunk_duration(d)
+            ))
+        menu.add(chunk_menu)
+
+        # Language selection submenu (for multilingual models)
+        current_model = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+        model_info = self._get_model_by_id(current_model)
+
+        if model_info and "lang_list" in model_info and len(model_info["lang_list"]) > 1:
+            lang_menu = rumps.MenuItem("Language")
+            current_lang = self.config.get("parakeet_language", "auto")
+
+            # Language names
+            lang_names = {
+                "auto": "Auto-detect",
+                "en": "English",
+                "fr": "French",
+                "de": "German",
+                "es": "Spanish",
+                "it": "Italian",
+                "pt": "Portuguese",
+                "nl": "Dutch",
+                "pl": "Polish",
+                "ru": "Russian",
+                "uk": "Ukrainian",
+                "cs": "Czech",
+                "sk": "Slovak",
+                "bg": "Bulgarian",
+                "hr": "Croatian",
+                "da": "Danish",
+                "et": "Estonian",
+                "fi": "Finnish",
+                "el": "Greek",
+                "hu": "Hungarian",
+                "lv": "Latvian",
+                "lt": "Lithuanian",
+                "mt": "Maltese",
+                "ro": "Romanian",
+                "sl": "Slovenian",
+                "sv": "Swedish",
+            }
+
+            # Add auto-detect option
+            auto_title = "✓ Auto-detect" if current_lang == "auto" else "Auto-detect"
+            lang_menu.add(rumps.MenuItem(
+                auto_title,
+                callback=lambda _: self.set_parakeet_language("auto")
+            ))
+            lang_menu.add(None)
+
+            # Add supported languages
+            for lang_code in model_info["lang_list"]:
+                lang_name = lang_names.get(lang_code, lang_code.upper())
+                title = f"{'✓ ' if current_lang == lang_code else ''}{lang_name}"
+                lang_menu.add(rumps.MenuItem(
+                    title,
+                    callback=lambda _, l=lang_code: self.set_parakeet_language(l)
+                ))
+
+            menu.add(lang_menu)
+
+        # Info about current model
+        menu.add(None)
+        if model_info:
+            menu.add(rumps.MenuItem(f"📝 Model: {model_info.get('name', current_model)}"))
+            if "wer" in model_info:
+                menu.add(rumps.MenuItem(f"📊 WER: {model_info['wer']}"))
+
+    def set_parakeet_language(self, lang_code):
+        """Set the Parakeet transcription language."""
+        self.config["parakeet_language"] = lang_code
+        save_config(self.config)
+        self._refresh_settings_menu()
+
+        lang_name = "Auto-detect" if lang_code == "auto" else lang_code.upper()
+        logger.info(f"Parakeet language set to: {lang_name}")
+
+    def _populate_microphone_menu(self, menu):
+        """Populate the microphone selection submenu."""
+        input_devices = self._get_input_devices()
+        selected_device = self.config.get("selected_microphone", None)
+        default_device = self._get_default_input_device()
+
+        if not input_devices:
+            menu.add(rumps.MenuItem("No input devices found"))
+            return
+
+        # System Default option
+        is_default_selected = selected_device is None
+        default_title = "✓ System Default" if is_default_selected else "System Default"
+        if default_device is not None:
+            # Find the name of the default device
+            default_name = next((d['name'] for d in input_devices if d['index'] == default_device), "Unknown")
+            default_title += f" ({default_name})"
+        menu.add(rumps.MenuItem(
+            default_title,
+            callback=lambda _: self.select_microphone(None)
+        ))
+        menu.add(None)
+
+        # List all input devices
+        for device in input_devices:
+            is_selected = selected_device == device['index']
+            title = f"{'✓ ' if is_selected else ''}{device['name']}"
+            menu.add(rumps.MenuItem(
+                title,
+                callback=lambda _, idx=device['index']: self.select_microphone(idx)
+            ))
+
+        # Show currently active device
+        menu.add(None)
+        if selected_device is not None:
+            active_name = next((d['name'] for d in input_devices if d['index'] == selected_device), "Unknown")
+        else:
+            active_name = next((d['name'] for d in input_devices if d['index'] == default_device), "System Default")
+        menu.add(rumps.MenuItem(f"📍 Active: {active_name}"))
+
+    def select_microphone(self, device_index):
+        """Select a microphone device."""
+        self.config["selected_microphone"] = device_index
+        save_config(self.config)
+        self._refresh_settings_menu()
+
+        if device_index is None:
+            logger.info("Microphone set to: System Default")
+        else:
+            devices = self._get_input_devices()
+            device_name = next((d['name'] for d in devices if d['index'] == device_index), f"Device {device_index}")
+            logger.info(f"Microphone set to: {device_name}")
+
     def _check_diarization_available(self):
         """Check if diarization is fully available."""
         try:
@@ -648,6 +1156,32 @@ class ParakeetMenuBarApp(rumps.App):
         token_ok = bool(token)
 
         return pyannote_ok, token_ok
+
+    def _get_input_devices(self):
+        """Get list of available input devices."""
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            input_devices = []
+            for i, d in enumerate(devices):
+                if d['max_input_channels'] > 0:
+                    input_devices.append({
+                        'index': i,
+                        'name': d['name'],
+                        'channels': d['max_input_channels']
+                    })
+            return input_devices
+        except Exception as e:
+            logger.error(f"Error getting input devices: {e}")
+            return []
+
+    def _get_default_input_device(self):
+        """Get the default input device index."""
+        try:
+            import sounddevice as sd
+            return sd.default.device[0]  # Returns (input, output) tuple
+        except Exception:
+            return None
 
     def _check_model_access(self, model_id: str) -> bool:
         """Check if user has access to a HuggingFace model."""
@@ -1583,16 +2117,23 @@ read -n 1
                 if self.recording:
                     self._audio_data.append(indata.copy())
 
-            # Start recording stream
-            logger.info(f"start_recording: Creating InputStream (rate={self.sample_rate}, channels={self.channels})")
+            # Start recording stream with selected microphone
+            selected_device = self.config.get("selected_microphone", None)
+            device_name = "System Default"
+            if selected_device is not None:
+                devices = self._get_input_devices()
+                device_name = next((d['name'] for d in devices if d['index'] == selected_device), f"Device {selected_device}")
+
+            logger.info(f"start_recording: Creating InputStream (device={device_name}, rate={self.sample_rate}, channels={self.channels})")
             self._stream = sd.InputStream(
+                device=selected_device,  # None = system default
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype=np.float32,
                 callback=audio_callback
             )
             self._stream.start()
-            logger.info("start_recording: Stream started successfully")
+            logger.info(f"start_recording: Stream started successfully on {device_name}")
 
             # Start timer to update title
             self._start_recording_timer()
