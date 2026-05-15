@@ -1135,16 +1135,17 @@ class ParakeetMenuBarApp(rumps.App):
             if not token:
                 return False, "HuggingFace token not set"
             return SpeakerDiarizer.is_available()
-        except ImportError:
-            return False, "pyannote.audio not installed"
+        except Exception as e:
+            return False, f"pyannote.audio unavailable: {type(e).__name__}"
 
     def _check_diarization_components(self):
         """Check individual diarization components."""
-        # Check pyannote
+        # Check pyannote — broad except: pyannote/torchaudio API drift can raise AttributeError at import
         try:
             import pyannote.audio
             pyannote_ok = True
-        except ImportError:
+        except Exception as e:
+            logger.warning(f"pyannote.audio import failed: {type(e).__name__}: {e}")
             pyannote_ok = False
 
         # Check token (config or env)
@@ -1347,10 +1348,11 @@ read -n 1
 '''
 
         # Open Terminal with the install command
+        escaped_install_cmd = install_cmd.replace('"', '\\"').replace('\n', '\\n')
         script = f'''
         tell application "Terminal"
             activate
-            do script "{install_cmd.replace('"', '\\"').replace('\n', '\\n')}"
+            do script "{escaped_install_cmd}"
         end tell
         '''
 
@@ -1691,10 +1693,11 @@ echo "Press any key to close..."
 read -n 1
 '''
 
+        escaped_download_cmd = download_cmd.replace('"', '\\"').replace('\n', '\\n')
         script = f'''
         tell application "Terminal"
             activate
-            do script "{download_cmd.replace('"', '\\"').replace('\n', '\\n')}"
+            do script "{escaped_download_cmd}"
         end tell
         '''
 
@@ -1989,10 +1992,11 @@ echo "Press any key to close..."
 read -n 1
 '''
 
+        escaped_download_cmd = download_cmd.replace('"', '\\"').replace('\n', '\\n')
         script = f'''
         tell application "Terminal"
             activate
-            do script "{download_cmd.replace('"', '\\"').replace('\n', '\\n')}"
+            do script "{escaped_download_cmd}"
         end tell
         '''
 
