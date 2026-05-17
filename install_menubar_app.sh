@@ -65,6 +65,21 @@ mkdir -p "$INSTALL_DIR"
 cp -R "$SCRIPT_DIR/menubar_app.py" "$INSTALL_DIR/"
 cp -R "$SCRIPT_DIR/parakeet_mlx_guiapi" "$INSTALL_DIR/"
 
+# Stamp the install with the current git short SHA so the running app
+# can show a version in About panel and log lines. Appends "-dirty" when
+# the working tree has uncommitted/unstaged changes, so a user reading
+# v<sha>-dirty in the About panel knows the running build is ahead of HEAD.
+if VERSION_SHA=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null); then
+    if ! git -C "$SCRIPT_DIR" diff --quiet || ! git -C "$SCRIPT_DIR" diff --cached --quiet; then
+        VERSION_SHA="${VERSION_SHA}-dirty"
+    fi
+    echo "$VERSION_SHA" > "$INSTALL_DIR/VERSION"
+    echo "📍 Version stamp: $VERSION_SHA"
+else
+    echo "dev" > "$INSTALL_DIR/VERSION"
+    echo "📍 Version stamp: dev (not a git checkout)"
+fi
+
 # Detect the venv Python path
 VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 if [ ! -f "$VENV_PYTHON" ]; then

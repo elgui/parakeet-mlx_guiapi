@@ -57,17 +57,50 @@ import subprocess
 import webbrowser
 import signal
 
-# Setup logging to file
+# Setup logging — rotating file + console, version-tagged, noisy libraries muted
+from logging.handlers import RotatingFileHandler
+
 LOG_PATH = Path.home() / ".parakeet_mlx.log"
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_PATH),
-        logging.StreamHandler()  # Also print to console
-    ]
+APP_DIR = Path(__file__).resolve().parent
+VERSION_FILE = APP_DIR / "VERSION"
+try:
+    VERSION = VERSION_FILE.read_text().strip() or "dev"
+except Exception:
+    VERSION = "dev"
+
+_log_fmt = logging.Formatter(
+    fmt=f'%(asctime)s [%(levelname)s] [%(name)s] [v{VERSION}] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
+_file_handler = RotatingFileHandler(
+    LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8'
+)
+_file_handler.setFormatter(_log_fmt)
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_log_fmt)
+
+# Reset root config (basicConfig may have been called by imports above)
+_root = logging.getLogger()
+for h in list(_root.handlers):
+    _root.removeHandler(h)
+_root.setLevel(logging.INFO)
+_root.addHandler(_file_handler)
+_root.addHandler(_stream_handler)
+
+# Mute noisy third-party loggers that flooded DEBUG with font/HTTP chatter
+for _noisy in (
+    "matplotlib", "matplotlib.font_manager", "matplotlib.pyplot",
+    "huggingface_hub", "huggingface_hub.file_download",
+    "urllib3", "urllib3.connectionpool",
+    "PIL", "PIL.PngImagePlugin",
+    "fontTools", "fontTools.subset",
+    "asyncio", "filelock",
+):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger("parakeet")
+logger.info(f"=== Parakeet menu bar app starting (v{VERSION}) ===")
+logger.info(f"Log file: {LOG_PATH} (5 MB rotation, 3 backups)")
 
 # Add current dir for local imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -349,8 +382,9 @@ class ParakeetMenuBarApp(rumps.App):
         self._populate_history_menu()
 
         # === About and Quit ===
-        about_item = rumps.MenuItem("ℹ️ About Parakeet", callback=self.show_about)
+        about_item = rumps.MenuItem(f"ℹ️ About Parakeet (v{VERSION})", callback=self.show_about)
         help_item = rumps.MenuItem("❓ Help", callback=self.show_help)
+        open_log_item = rumps.MenuItem("📂 Open Log", callback=self.open_log_file)
         quit_item = rumps.MenuItem("⏻ Quit Parakeet", callback=self.quit_app)
 
         self.menu = [
@@ -367,6 +401,7 @@ class ParakeetMenuBarApp(rumps.App):
             self.history_menu,
             None,
             help_item,
+            open_log_item,
             about_item,
             quit_item,
         ]
@@ -2810,8 +2845,10 @@ read -n 1
             server_status = "Server: Stopped"
 
         rumps.alert(
-            title="Parakeet Voice-to-Clipboard",
+            title=f"Parakeet Voice-to-Clipboard (v{VERSION})",
             message=(
+                f"Build: v{VERSION}\n"
+                f"Log: {LOG_PATH}\n\n"
                 "Quick voice transcription for macOS.\n\n"
                 "Features:\n"
                 "• Voice recording to clipboard\n"
@@ -2828,6 +2865,15 @@ read -n 1
                 "https://github.com/senstella/parakeet-mlx"
             )
         )
+
+    def open_log_file(self, _):
+        """Open the log file in the system default app (usually Console.app)."""
+        try:
+            subprocess.run(["open", str(LOG_PATH)], check=False)
+            logger.info(f"User opened log file: {LOG_PATH}")
+        except Exception as e:
+            logger.error(f"Failed to open log file: {e}", exc_info=True)
+            rumps.alert(title="Could not open log", message=str(e))
 
     def quit_app(self, _):
         """Quit the application."""
