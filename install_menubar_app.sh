@@ -24,21 +24,29 @@ if [ ! -f "$SCRIPT_DIR/menubar_app.py" ]; then
     exit 1
 fi
 
-# Check for Python
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Error: Python 3 is required but not found."
-    exit 1
+# Detect or create dev .venv
+VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_PYTHON="$VENV_DIR/bin/python3"
+
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "📦 No .venv found in $SCRIPT_DIR — creating one..."
+    python3 -m venv "$VENV_DIR" || { echo "❌ Failed to create .venv (is python3 installed?)"; exit 1; }
+    echo "📦 Installing requirements (this takes a few minutes)..."
+    "$VENV_PYTHON" -m pip install --upgrade pip --quiet
+    "$VENV_PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt" || { echo "❌ Failed to install requirements"; exit 1; }
 fi
 
+echo "📍 Using venv Python: $VENV_PYTHON"
+
 # Check for required dependencies
-echo "📦 Checking dependencies..."
-python3 -c "import rumps, pyperclip, sounddevice, parakeet_mlx" 2>/dev/null || {
-    echo "⚠️  Some dependencies are missing. Installing..."
-    pip3 install -q rumps pyperclip sounddevice parakeet-mlx scipy
+echo "📦 Checking menu-bar deps..."
+"$VENV_PYTHON" -c "import rumps, pyperclip, sounddevice, requests, scipy, numpy" 2>/dev/null || {
+    echo "📦 Installing thin-client deps into venv..."
+    "$VENV_PYTHON" -m pip install rumps pyperclip sounddevice requests scipy numpy
 }
 
 # Install py2app if needed
-pip3 install -q py2app 2>/dev/null || true
+"$VENV_PYTHON" -m pip install -q py2app 2>/dev/null || true
 
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
@@ -47,7 +55,7 @@ rm -rf "$SCRIPT_DIR/build" "$SCRIPT_DIR/dist"
 # Build the app using alias mode (fast, lightweight)
 echo "🔨 Building Parakeet.app..."
 cd "$SCRIPT_DIR"
-python3 setup_app.py py2app --alias 2>&1 | grep -E "(error|Error|Done)" || true
+"$VENV_PYTHON" setup_app.py py2app --alias 2>&1 | grep -E "(error|Error|Done)" || true
 
 if [ ! -d "$APP_PATH" ]; then
     echo "❌ Error: Build failed."
@@ -63,22 +71,9 @@ mkdir -p "$INSTALL_DIR"
 
 # Copy source files to install directory
 cp -R "$SCRIPT_DIR/menubar_app.py" "$INSTALL_DIR/"
-cp -R "$SCRIPT_DIR/parakeet_mlx_guiapi" "$INSTALL_DIR/"
-
-# Detect the venv Python path
-VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3"
-if [ ! -f "$VENV_PYTHON" ]; then
-    VENV_PYTHON="$SCRIPT_DIR/venv/bin/python3"
-fi
-if [ ! -f "$VENV_PYTHON" ]; then
-    echo "⚠️  No virtual environment found. Using system Python."
-    VENV_PYTHON="python3"
-fi
 
 VENV_SITE_PACKAGES="$(dirname "$VENV_PYTHON")/../lib/python3.*/site-packages"
 VENV_SITE_PACKAGES=$(echo $VENV_SITE_PACKAGES)  # Expand glob
-
-echo "📍 Using Python: $VENV_PYTHON"
 
 # Create a wrapper script that the app will use
 cat > "$INSTALL_DIR/run_parakeet.py" << PYTHON_SCRIPT
@@ -134,7 +129,7 @@ setup(
 SETUP_SCRIPT
 
 cd "$INSTALL_DIR"
-python3 setup_app.py py2app --alias 2>&1 | grep -E "(error|Error|Done)" || true
+"$VENV_PYTHON" setup_app.py py2app --alias 2>&1 | grep -E "(error|Error|Done)" || true
 
 if [ ! -d "$INSTALL_DIR/dist/$APP_NAME.app" ]; then
     echo "❌ Error: Final build failed."
