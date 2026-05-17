@@ -18,15 +18,11 @@ from flask_sock import Sock
 from .session import LiveTranscriptionSession
 from parakeet_mlx_guiapi.providers import ProviderType
 
-# Set up logging to stdout for immediate visibility
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='[WS %(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%H:%M:%S',
-    stream=sys.stdout
-)
+# Use a named logger; do NOT call basicConfig from a library module — it
+# stomps on the host application's logging config (e.g. the menubar app
+# was getting DEBUG-level urllib3 chatter leaked through the root handler
+# this set up). The hosting app owns root-logger setup.
 logger = logging.getLogger('live_ws')
-logger.setLevel(logging.DEBUG)
 
 # Store active sessions
 _sessions: Dict[str, LiveTranscriptionSession] = {}

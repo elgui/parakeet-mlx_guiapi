@@ -316,8 +316,13 @@ class ParakeetMenuBarApp(rumps.App):
         # Build menu - rumps requires menu items to be created here
         self._setup_menu()
 
-        # Lazy-load transcriber in background (with download progress if needed)
-        threading.Thread(target=self._init_transcriber_with_download, daemon=True).start()
+        # MLX models bind their state to the loader thread's stream context.
+        # If we load on a worker thread, `mx.eval()` from the transcribe worker
+        # fails with `There is no Stream(gpu, N) in current thread.` So the
+        # load MUST happen on the main (rumps) thread. The cached-model path
+        # blocks briefly (~2s); the download path returns immediately after
+        # opening a Terminal window and the load is rescheduled by a rumps.Timer.
+        self._init_transcriber_with_download()
 
     def _init_transcriber_with_download(self):
         """Initialize transcriber, downloading in Terminal if needed."""
@@ -1641,8 +1646,9 @@ read -n 1
 
         logger.info(f"User requested model reload: {model_name}")
 
-        # Reload in background
-        threading.Thread(target=self._init_transcriber_with_download, daemon=True).start()
+        # Reload synchronously on main thread (rumps callbacks run on main).
+        # See `__init__` for why the load must not be on a worker thread.
+        self._init_transcriber_with_download()
 
         rumps.notification(
             title="Reloading Model",
@@ -1959,10 +1965,11 @@ read -n 1
         # Update menu
         self._refresh_model_menu()
 
-        # Reload transcriber for direct transcription
+        # Reload transcriber for direct transcription.
+        # MUST be on main thread (rumps callback context) — see __init__ comment.
         self.transcriber = None
         self.status_item.title = f"Loading {model['name']}..."
-        threading.Thread(target=self._init_transcriber, daemon=True).start()
+        self._init_transcriber()
 
         # Restart server if running to use new model
         if self._server_process and self._server_process.poll() is None:
@@ -2040,26 +2047,33 @@ read -n 1
             subprocess.run(["osascript", "-e", script], check=True)
             self.status_item.title = f"Downloading... (see Terminal)"
 
-            # Start a background thread to wait for download and then load
-            def wait_and_load():
-                # Poll until model is cached
-                for _ in range(600):  # Max 10 minutes
-                    time.sleep(1)
-                    if self._is_model_cached(model_id):
-                        # Model downloaded, now load it
-                        self.status_item.title = f"Loading {model_name}..."
-                        self._init_transcriber()
-                        return
-                # Timeout
-                self.status_item.title = "Download timeout"
-                rumps.notification(
-                    title="Download Timeout",
-                    subtitle="",
-                    message="Model download took too long. Try again.",
-                    sound=True
-                )
+            # Poll for the cached model on the main thread via rumps.Timer so
+            # that when the download completes, _init_transcriber runs on the
+            # main thread (the only context where MLX model load + later
+            # transcribe can share a stream — see __init__ comment).
+            self._download_poll_elapsed = 0
+            self._download_poll_max_s = 600  # 10 minutes
 
-            threading.Thread(target=wait_and_load, daemon=True).start()
+            def _check_download(timer):
+                self._download_poll_elapsed += int(timer.interval)
+                if self._is_model_cached(model_id):
+                    timer.stop()
+                    self.status_item.title = f"Loading {model_name}..."
+                    logger.info(f"Download detected for {model_id}, loading on main thread")
+                    self._init_transcriber()
+                elif self._download_poll_elapsed >= self._download_poll_max_s:
+                    timer.stop()
+                    self.status_item.title = "Download timeout"
+                    logger.warning(f"Download timed out for {model_id} after {self._download_poll_max_s}s")
+                    rumps.notification(
+                        title="Download Timeout",
+                        subtitle="",
+                        message="Model download took too long. Try again.",
+                        sound=True,
+                    )
+
+            self._download_poll_timer = rumps.Timer(_check_download, 1.0)
+            self._download_poll_timer.start()
 
         except Exception as e:
             rumps.alert(
