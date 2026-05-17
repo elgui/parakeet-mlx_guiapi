@@ -91,6 +91,7 @@ _root.addHandler(_stream_handler)
 for _noisy in (
     "matplotlib", "matplotlib.font_manager", "matplotlib.pyplot",
     "huggingface_hub", "huggingface_hub.file_download",
+    "httpx", "httpcore",
     "urllib3", "urllib3.connectionpool",
     "PIL", "PIL.PngImagePlugin",
     "fontTools", "fontTools.subset",
