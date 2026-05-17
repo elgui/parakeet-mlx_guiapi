@@ -109,6 +109,88 @@ sys.path.insert(0, current_dir)
 
 from parakeet_mlx_guiapi.utils.config import get_config, save_config
 
+# === MLX transcription worker ====================================================
+# MLX 0.31.2 binds a model's parameters to the stream context of the thread that
+# performed the first eval. Cross-thread access raises:
+#     RuntimeError: There is no Stream(gpu, 0) in current thread.
+# Validated empirically: even `mx.set_default_stream(...)`, `with mx.stream(...)`,
+# and small "warm-up" `mx.eval` calls from a different thread all fail. The only
+# pattern that works is: load + every subsequent transcribe on the SAME thread.
+# This worker owns the AudioTranscriber and serves all transcribe requests via
+# a queue so callers (rumps UI thread, _process_audio worker, file-transcribe
+# worker, etc.) can submit jobs without ever touching MLX state directly.
+import queue as _queue
+
+class MLXTranscribeWorker:
+    """Dedicated thread that owns the MLX model and serves transcribes via queue."""
+
+    def __init__(self, model_name):
+        self.model_name = model_name
+        self._in_q = _queue.Queue()
+        self._ready = threading.Event()
+        self._load_error = None
+        self._impl = None
+        self._shutdown = False
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name=f"MLXTranscribeWorker({model_name})"
+        )
+        self._thread.start()
+
+    def _run(self):
+        try:
+            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
+            self._impl = AudioTranscriber(model_name=self.model_name)
+            logger.info(
+                f"[mlx-worker] Model {self.model_name!r} loaded on thread "
+                f"{threading.current_thread().name}"
+            )
+        except Exception as e:
+            logger.error(f"[mlx-worker] Model load failed: {e}", exc_info=True)
+            self._load_error = e
+            self._ready.set()
+            return
+        self._ready.set()
+        while not self._shutdown:
+            job = self._in_q.get()
+            if job is None:
+                logger.info("[mlx-worker] shutdown signal received")
+                return
+            audio_path, kwargs, result_q = job
+            try:
+                df, txt = self._impl.transcribe(audio_path, **kwargs)
+                result_q.put(("ok", df, txt))
+            except Exception as e:
+                logger.error(f"[mlx-worker] transcribe failed: {e}", exc_info=True)
+                result_q.put(("err", e))
+
+    def is_ready(self):
+        return self._ready.is_set() and self._load_error is None
+
+    def wait_until_ready(self, timeout=120):
+        if not self._ready.wait(timeout=timeout):
+            raise TimeoutError(f"MLX model {self.model_name!r} did not load within {timeout}s")
+        if self._load_error is not None:
+            raise self._load_error
+
+    def transcribe(self, audio_path, **kwargs):
+        """Block the calling thread until the dedicated worker returns a result.
+
+        Safe to call from any thread — the MLX work itself never leaves the
+        dedicated worker thread.
+        """
+        self.wait_until_ready()
+        result_q = _queue.Queue()
+        self._in_q.put((audio_path, kwargs, result_q))
+        status, *rest = result_q.get()
+        if status == "ok":
+            return rest[0], rest[1]
+        raise rest[0]
+
+    def shutdown(self):
+        self._shutdown = True
+        self._in_q.put(None)
+# =================================================================================
+
 
 # Available models (from mlx-community on HuggingFace)
 # Organized by category with detailed metadata
@@ -1859,22 +1941,18 @@ read -n 1
                         sound=False
                     )
 
-            # Import and load model
-            logger.info("Importing AudioTranscriber...")
-            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
-
-            logger.info(f"Creating AudioTranscriber with model: {model_name}")
-            logger.info("This may take a moment for first load...")
-
-            try:
-                self.transcriber = AudioTranscriber(model_name=model_name)
-                logger.info("AudioTranscriber created successfully")
-            except Exception as load_error:
-                logger.error(f"AudioTranscriber creation failed: {load_error}")
-                logger.error(f"Model ID: {model_name}")
-                raise
-
-            logger.info("Model loaded successfully")
+            # Spin up dedicated MLX worker. The worker thread loads the model
+            # async; transcribe calls (in _process_audio) block on the worker's
+            # queue once the model is ready. See MLXTranscribeWorker docstring
+            # near top of file for the threading constraint this satisfies.
+            if self.transcriber is not None:
+                try:
+                    self.transcriber.shutdown()
+                except Exception:
+                    pass
+            logger.info(f"Spawning MLXTranscribeWorker for: {model_name}")
+            self.transcriber = MLXTranscribeWorker(model_name)
+            logger.info("MLX worker spawned; model load proceeding in background")
             self.status_item.title = f"Ready: {model_short}"
             self._last_error = None
 
@@ -2297,14 +2375,17 @@ read -n 1
             temp_file.close()
             wavfile.write(temp_path, self.sample_rate, audio_int16)
 
-            # Wait for transcriber if not ready
+            # Wait for the MLX worker — both its existence and its model load.
             wait_count = 0
             while self.transcriber is None and wait_count < 60:
                 time.sleep(0.5)
                 wait_count += 1
-
             if self.transcriber is None:
                 raise Exception("Model not loaded. Please wait and try again.")
+            # Block on model readiness — the worker loads in background, so
+            # on a cold first record the user may have clicked before load
+            # finished. Up to 120s tolerance for cold start.
+            self.transcriber.wait_until_ready(timeout=120)
 
             # Transcribe
             logger.info("_process_audio: Starting transcription...")
@@ -2712,6 +2793,8 @@ read -n 1
 
                 if self.transcriber is None:
                     raise Exception("Model not loaded. Please wait and try again.")
+                # Wait for the MLX worker's background load to finish.
+                self.transcriber.wait_until_ready(timeout=120)
 
                 # Get file info
                 file_name = os.path.basename(file_path)
