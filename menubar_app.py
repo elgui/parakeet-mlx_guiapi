@@ -56,9 +56,14 @@ import pyperclip
 import subprocess
 import webbrowser
 import signal
+import requests
 
 # Setup logging to file
 LOG_PATH = Path.home() / ".parakeet_mlx.log"
+DAEMON_BASE_URL = "http://localhost:8080"
+DAEMON_LABEL = "com.gui.parakeet"
+DAEMON_PLIST = os.path.expanduser("~/Library/LaunchAgents/com.gui.parakeet.plist")
+DAEMON_STDERR_LOG = "/Users/gui/dev/parakeet-mlx_guiapi/stderr.log"
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -239,6 +244,111 @@ def get_models_by_category():
     return categories
 
 
+class TranscriptionClient:
+    """Thin HTTP client for the launchd daemon's /api/transcribe endpoint."""
+
+    def __init__(self, base_url=DAEMON_BASE_URL):
+        self.base_url = base_url.rstrip("/")
+
+    def transcribe(self, wav_bytes, config, recording_duration):
+        """POST WAV bytes to /api/transcribe and return parsed JSON.
+
+        Raises requests exceptions on network/timeout/non-2xx so callers can
+        surface the failure to the user.
+        """
+        provider = config.get("stt_provider", "parakeet")
+        if provider == "parakeet":
+            model = config.get("model_name", "")
+        else:
+            model = config.get("deepgram_model", "nova-3")
+
+        files = {
+            "file": ("recording.wav", wav_bytes, "audio/wav"),
+        }
+        data = {
+            "provider": provider,
+            "model": model,
+            "deepgram_options": json.dumps(config.get("deepgram_options", {})),
+            "enable_diarization": str(config.get("diarization_enabled", False)).lower(),
+            "chunk_duration": str(config.get("default_chunk_duration", 120)),
+            "output_format": "json",
+        }
+
+        timeout = max(60, int(recording_duration * 2))
+        url = f"{self.base_url}/api/transcribe"
+        logger.info(
+            "TranscriptionClient: POST %s provider=%s model=%s diar=%s timeout=%ds",
+            url, provider, model, data["enable_diarization"], timeout,
+        )
+
+        response = requests.post(url, files=files, data=data, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+
+
+class DaemonHealth:
+    """Periodic health probe for the launchd daemon at localhost:8080."""
+
+    def __init__(self, base_url=DAEMON_BASE_URL, interval=30.0, on_change=None):
+        self.base_url = base_url.rstrip("/")
+        self.interval = interval
+        self.on_change = on_change  # callback(is_online: bool) when state changes
+        self._stop = threading.Event()
+        self._thread = None
+        self._online = None  # None = unknown, True/False once checked
+
+    @property
+    def online(self):
+        return bool(self._online)
+
+    def check_once(self):
+        """Single synchronous health check. Returns True if daemon answers."""
+        try:
+            r = requests.get(f"{self.base_url}/api/models", timeout=2.0)
+            return r.status_code == 200
+        except Exception as e:
+            logger.debug("DaemonHealth: probe failed: %s", e)
+            return False
+
+    def _set(self, is_online):
+        prev = self._online
+        self._online = is_online
+        if prev != is_online and self.on_change is not None:
+            try:
+                self.on_change(is_online)
+            except Exception as e:
+                logger.warning("DaemonHealth on_change callback failed: %s", e)
+
+    def start(self):
+        """Run an initial check, then loop every `interval` seconds until stop()."""
+        def loop():
+            self._set(self.check_once())
+            while not self._stop.wait(self.interval):
+                self._set(self.check_once())
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+
+def _run_launchctl(args):
+    """Run a launchctl command, log it, return (returncode, stdout, stderr)."""
+    cmd = ["launchctl"] + list(args)
+    logger.info("launchctl: %s", " ".join(cmd))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        logger.info(
+            "launchctl rc=%d stdout=%r stderr=%r",
+            result.returncode, result.stdout.strip(), result.stderr.strip(),
+        )
+        return result.returncode, result.stdout, result.stderr
+    except Exception as e:
+        logger.error("launchctl invocation failed: %s", e)
+        return 1, "", str(e)
+
+
 class ParakeetMenuBarApp(rumps.App):
     """Menu bar app for voice-to-clipboard transcription."""
 
@@ -258,16 +368,10 @@ class ParakeetMenuBarApp(rumps.App):
 
         self.recording = False
         self.processing = False
-        self.transcriber = None
         self._stream = None
         self._audio_data = []
         self._recording_start_time = None
         self._timer = None
-
-        # Server control
-        self._server_process = None
-        self._server_port = 8080  # Default port (5000 is used by macOS AirPlay)
-        self._gradio_port = 8081
 
         # Load config
         self.config = get_config()
@@ -279,30 +383,41 @@ class ParakeetMenuBarApp(rumps.App):
         # Error tracking for debugging
         self._last_error = None
 
-        # Build menu - rumps requires menu items to be created here
+        # HTTP client + daemon health probe
+        self.client = TranscriptionClient(DAEMON_BASE_URL)
+        self._offline_notified = False
+        self.daemon_health = DaemonHealth(
+            DAEMON_BASE_URL,
+            interval=30.0,
+            on_change=self._on_daemon_state_change,
+        )
+
+        # Build menu — rumps requires menu items to be created here
         self._setup_menu()
 
-        # Lazy-load transcriber in background (with download progress if needed)
-        threading.Thread(target=self._init_transcriber_with_download, daemon=True).start()
+        # Start background health polling (initial check + every 30s)
+        self.daemon_health.start()
 
-    def _init_transcriber_with_download(self):
-        """Initialize transcriber, downloading in Terminal if needed."""
-        model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-        model_info = self._get_model_by_id(model_name) or {}
-
-        logger.info(f"Starting transcriber initialization for: {model_name}")
-
-        is_cached = self._is_model_cached(model_name)
-        logger.info(f"Model cache check: {'cached' if is_cached else 'not cached'}")
-
-        if not is_cached:
-            # Model needs download - use Terminal for progress
-            logger.info("Model needs download, opening Terminal...")
-            self._download_and_load_model(model_info if model_info else {"id": model_name, "name": model_name.split("/")[-1]})
-        else:
-            # Model is cached, load directly
-            logger.info("Model is cached, loading directly...")
-            self._init_transcriber()
+    def _on_daemon_state_change(self, is_online):
+        """Callback from DaemonHealth when the daemon flips state."""
+        try:
+            if is_online:
+                self.status_item.title = "Daemon: ● ready"
+                self._offline_notified = False
+            else:
+                self.status_item.title = "Daemon: ○ offline"
+                if not self._offline_notified:
+                    self._offline_notified = True
+                    rumps.notification(
+                        title="Daemon offline",
+                        subtitle="",
+                        message="Server > Start to launch the daemon.",
+                        sound=False,
+                    )
+            # Server submenu shows status — refresh it
+            self._refresh_server_menu()
+        except Exception as e:
+            logger.warning("on_daemon_state_change failed: %s", e)
 
     def _setup_menu(self):
         """Set up the initial menu structure."""
@@ -326,7 +441,7 @@ class ParakeetMenuBarApp(rumps.App):
         )
 
         # === Status ===
-        self.status_item = rumps.MenuItem("Status: Loading model...", callback=self.status_clicked)
+        self.status_item = rumps.MenuItem("Daemon: ○ checking…", callback=self.status_clicked)
 
         # === Server Controls ===
         self.server_menu = rumps.MenuItem("🌐 Server")
@@ -375,23 +490,20 @@ class ParakeetMenuBarApp(rumps.App):
         self.cancel_button.set_callback(None)  # Disable it initially
 
     def _populate_server_menu(self):
-        """Populate the server control menu."""
-        # Server status
-        if self._server_process and self._server_process.poll() is None:
-            status = "● Server Running"
-            self.server_menu.add(rumps.MenuItem(f"✅ {status}"))
+        """Populate the server control menu (controls the launchd daemon)."""
+        # Daemon liveness from the health helper
+        is_online = getattr(self, "daemon_health", None) and self.daemon_health.online
+        if is_online:
+            self.server_menu.add(rumps.MenuItem("✅ ● Daemon Running"))
         else:
-            status = "○ Server Stopped"
-            self.server_menu.add(rumps.MenuItem(f"⚪ {status}"))
+            self.server_menu.add(rumps.MenuItem("⚪ ○ Daemon Stopped"))
 
         self.server_menu.add(None)
 
-        # Start/Stop buttons
-        if self._server_process and self._server_process.poll() is None:
-            self.server_menu.add(rumps.MenuItem("⏹ Stop Server", callback=self.stop_server))
-            self.server_menu.add(rumps.MenuItem("🔄 Restart Server", callback=self.restart_server))
-        else:
-            self.server_menu.add(rumps.MenuItem("▶️ Start Server", callback=self.start_server))
+        # launchctl actions — always available; daemon decides validity
+        self.server_menu.add(rumps.MenuItem("▶️ Start Daemon", callback=self.start_server))
+        self.server_menu.add(rumps.MenuItem("⏹ Stop Daemon", callback=self.stop_server))
+        self.server_menu.add(rumps.MenuItem("🔄 Restart Daemon", callback=self.restart_server))
 
         self.server_menu.add(None)
 
@@ -399,34 +511,7 @@ class ParakeetMenuBarApp(rumps.App):
         self.server_menu.add(rumps.MenuItem("🎤 Live Transcription", callback=self.open_live_transcription))
         self.server_menu.add(rumps.MenuItem("🌐 Open Web UI", callback=self.open_web_ui))
         self.server_menu.add(rumps.MenuItem("📊 Open API Docs", callback=self.open_api_docs))
-
-        self.server_menu.add(None)
-
-        # Server config submenu
-        config_menu = rumps.MenuItem("⚙️ Server Config")
-
-        # Port configuration
-        port_menu = rumps.MenuItem("API Port")
-        current_port = self.config.get("server_port", 8080)
-        for port in [8080, 8000, 3000, 5000]:
-            title = f"{'✓ ' if port == current_port else ''}{port}"
-            port_menu.add(rumps.MenuItem(title, callback=lambda _, p=port: self.set_server_port(p)))
-        config_menu.add(port_menu)
-
-        # Gradio port
-        gradio_port_menu = rumps.MenuItem("Gradio Port")
-        current_gradio = self.config.get("gradio_port", 8081)
-        for port in [8081, 7860, 5001]:
-            title = f"{'✓ ' if port == current_gradio else ''}{port}"
-            gradio_port_menu.add(rumps.MenuItem(title, callback=lambda _, p=port: self.set_gradio_port(p)))
-        config_menu.add(gradio_port_menu)
-
-        # Debug mode toggle
-        debug_mode = self.config.get("server_debug", False)
-        debug_title = f"{'✓ ' if debug_mode else ''}Debug Mode"
-        config_menu.add(rumps.MenuItem(debug_title, callback=self.toggle_debug_mode))
-
-        self.server_menu.add(config_menu)
+        self.server_menu.add(rumps.MenuItem("📝 View Daemon Logs", callback=self.view_daemon_logs))
 
     def _refresh_server_menu(self):
         """Refresh the server menu."""
@@ -1122,41 +1207,6 @@ class ParakeetMenuBarApp(rumps.App):
             device_name = next((d['name'] for d in devices if d['index'] == device_index), f"Device {device_index}")
             logger.info(f"Microphone set to: {device_name}")
 
-    def _check_diarization_available(self):
-        """Check if diarization is fully available."""
-        try:
-            from parakeet_mlx_guiapi.diarization import SpeakerDiarizer
-            # Also check config for token
-            token = (
-                self.config.get("huggingface_token")
-                or os.environ.get("HUGGINGFACE_TOKEN")
-                or os.environ.get("HF_TOKEN")
-            )
-            if not token:
-                return False, "HuggingFace token not set"
-            return SpeakerDiarizer.is_available()
-        except ImportError:
-            return False, "pyannote.audio not installed"
-
-    def _check_diarization_components(self):
-        """Check individual diarization components."""
-        # Check pyannote
-        try:
-            import pyannote.audio
-            pyannote_ok = True
-        except ImportError:
-            pyannote_ok = False
-
-        # Check token (config or env)
-        token = (
-            self.config.get("huggingface_token")
-            or os.environ.get("HUGGINGFACE_TOKEN")
-            or os.environ.get("HF_TOKEN")
-        )
-        token_ok = bool(token)
-
-        return pyannote_ok, token_ok
-
     def _get_input_devices(self):
         """Get list of available input devices."""
         try:
@@ -1183,50 +1233,8 @@ class ParakeetMenuBarApp(rumps.App):
         except Exception:
             return None
 
-    def _check_model_access(self, model_id: str) -> bool:
-        """Check if user has access to a HuggingFace model."""
-        try:
-            from huggingface_hub import model_info
-            token = (
-                self.config.get("huggingface_token")
-                or os.environ.get("HUGGINGFACE_TOKEN")
-                or os.environ.get("HF_TOKEN")
-            )
-            # Try to get model info - will raise if no access
-            model_info(model_id, token=token)
-            return True
-        except Exception as e:
-            if "403" in str(e) or "restricted" in str(e) or "gated" in str(e).lower():
-                return False
-            # Other errors (network, etc.) - assume accessible
-            return True
-
-    def _get_required_diarization_models(self):
-        """Get list of required models for diarization."""
-        return [
-            ("pyannote/speaker-diarization-3.1", "Main pipeline"),
-            ("pyannote/segmentation-3.0", "Voice detection"),
-            ("pyannote/wespeaker-voxceleb-resnet34-LM", "Speaker embeddings"),
-            ("pyannote/speaker-diarization", "Base diarization"),
-            ("pyannote/speaker-diarization-community-1", "Community model"),
-        ]
-
-    def _check_all_models_accessible(self):
-        """Check if all required diarization models are accessible."""
-        models = self._get_required_diarization_models()
-        missing = []
-        for model_id, desc in models:
-            if not self._check_model_access(model_id):
-                missing.append((model_id, desc))
-        return missing
-
     def toggle_diarization(self, _):
-        """Toggle speaker diarization."""
-        available, msg = self._check_diarization_available()
-        if not available:
-            self.start_diarization_setup(None)
-            return
-
+        """Toggle speaker diarization (daemon owns model availability)."""
         current = self.config.get("diarization_enabled", False)
         self.config["diarization_enabled"] = not current
         save_config(self.config)
@@ -1237,8 +1245,12 @@ class ParakeetMenuBarApp(rumps.App):
             rumps.notification(
                 title="Speaker Diarization",
                 subtitle=status.capitalize(),
-                message="Transcripts will include speaker labels" if not current else "Speaker labels disabled",
-                sound=False
+                message=(
+                    "Transcripts will include speaker labels"
+                    if not current
+                    else "Speaker labels disabled"
+                ),
+                sound=False,
             )
 
     def set_num_speakers(self, num_speakers):
@@ -1257,226 +1269,6 @@ class ParakeetMenuBarApp(rumps.App):
                 title="Speaker Diarization",
                 subtitle=f"{'Auto-detect' if num_speakers == 0 else f'{num_speakers} speakers'}",
                 message=msg,
-                sound=False
-            )
-
-    def start_diarization_setup(self, _):
-        """Interactive diarization setup wizard."""
-        pyannote_ok, token_ok = self._check_diarization_components()
-
-        # Step 1: Check pyannote
-        if not pyannote_ok:
-            response = rumps.alert(
-                title="Speaker Diarization Setup (1/3)",
-                message=(
-                    "pyannote.audio is not installed.\n\n"
-                    "This is required for speaker identification.\n"
-                    "Install size: ~500MB\n\n"
-                    "Install now?"
-                ),
-                ok="Install",
-                cancel="Cancel"
-            )
-            if response == 1:  # OK clicked
-                self._install_pyannote()
-            return
-
-        # Step 2: Check token
-        if not token_ok:
-            response = rumps.alert(
-                title="Speaker Diarization Setup (2/3)",
-                message=(
-                    "HuggingFace token is required.\n\n"
-                    "You need:\n"
-                    "1. A free HuggingFace account\n"
-                    "2. Accept the pyannote model license\n"
-                    "3. A 'Read' access token (not Write)\n\n"
-                    "Already have a token starting with 'hf_...'?"
-                ),
-                ok="I have a token",
-                cancel="Guide me through setup"
-            )
-
-            if response == 0:  # Cancel = Open HuggingFace
-                self._open_huggingface_setup()
-            else:  # OK = Enter token
-                self._prompt_for_token()
-            return
-
-        # Step 3: All set - enable and test
-        self._finalize_diarization_setup()
-
-    def _install_pyannote(self):
-        """Install pyannote.audio package with visible progress in Terminal."""
-        # Get Python executable path
-        python_path = sys.executable
-
-        # Build the install command with progress display
-        # Note: On macOS, pip automatically installs CPU/MPS version of PyTorch (no CUDA)
-        install_cmd = f'''
-clear
-echo "══════════════════════════════════════════════════════════════"
-echo "  Installing pyannote.audio for Speaker Diarization"
-echo "══════════════════════════════════════════════════════════════"
-echo ""
-echo "Python: {python_path}"
-echo "Platform: Apple Silicon (MPS/CPU - no CUDA needed)"
-echo ""
-echo "This may take a few minutes..."
-echo "Installing PyTorch + pyannote.audio..."
-echo ""
-"{python_path}" -m pip install --progress-bar on "pyannote.audio>=3.1.0"
-EXIT_CODE=$?
-echo ""
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "✅ Installation complete!"
-    echo ""
-    echo "pyannote will use CPU for maximum compatibility."
-    echo "(Apple Silicon GPU/MPS is experimental for pyannote)"
-    echo ""
-    echo "You can close this window and continue setup in Parakeet."
-else
-    echo "❌ Installation failed (exit code: $EXIT_CODE)"
-    echo ""
-    echo "Try running manually:"
-    echo "  {python_path} -m pip install pyannote.audio"
-fi
-echo ""
-echo "Press any key to close..."
-read -n 1
-'''
-
-        # Open Terminal with the install command
-        script = f'''
-        tell application "Terminal"
-            activate
-            do script "{install_cmd.replace('"', '\\"').replace('\n', '\\n')}"
-        end tell
-        '''
-
-        try:
-            subprocess.run(["osascript", "-e", script], check=True)
-            self.status_item.title = "Installing... (see Terminal)"
-        except Exception as e:
-            rumps.alert(
-                title="Could not open Terminal",
-                message=f"Error: {e}\n\nTry installing manually:\npip install pyannote.audio"
-            )
-
-    def _open_huggingface_setup(self):
-        """Open HuggingFace pages for setup."""
-        # Show detailed instructions with ALL required models
-        models = self._get_required_diarization_models()
-        rumps.alert(
-            title=f"HuggingFace Setup (Step 1 of {len(models) + 1})",
-            message=(
-                f"Speaker diarization requires access to {len(models)} models.\n\n"
-                "For each model, you need to:\n"
-                "1. Sign in (or create a free account)\n"
-                "2. Scroll to 'Agree and access repository'\n"
-                "3. Click to accept the license\n\n"
-                "I'll open each model page in sequence."
-            ),
-            ok="Start Setup"
-        )
-
-        for i, (model, desc) in enumerate(models, 1):
-            rumps.alert(
-                title=f"Accept Model License ({i}/{len(models)})",
-                message=(
-                    f"Model: {model}\n"
-                    f"Purpose: {desc}\n\n"
-                    "Click OK to open the model page.\n"
-                    "Accept the license, then come back."
-                ),
-                ok="Open Model Page"
-            )
-            webbrowser.open(f"https://huggingface.co/{model}")
-
-        # Show token instructions
-        rumps.alert(
-            title=f"HuggingFace Setup (Final Step)",
-            message=(
-                "Now create an access token.\n\n"
-                "Create a token with these settings:\n"
-                "• Name: 'Parakeet' (or anything)\n"
-                "• Type: 'Read' (NOT Write)\n\n"
-                "Copy the token (starts with 'hf_...')\n"
-                "Then click 'Quick Setup' → 'I have a token'"
-            ),
-            ok="Open Token Page"
-        )
-
-        webbrowser.open("https://huggingface.co/settings/tokens/new?tokenType=read")
-
-    def _prompt_for_token(self):
-        """Prompt user to enter their HuggingFace token."""
-        # Use AppleScript for text input (rumps doesn't have input dialogs)
-        script = '''
-        tell application "System Events"
-            display dialog "Paste your HuggingFace token:" default answer "" with title "Enter Token" buttons {"Cancel", "Save"} default button "Save"
-            if button returned of result is "Save" then
-                return text returned of result
-            end if
-        end tell
-        '''
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True
-            )
-            token = result.stdout.strip()
-
-            if token and len(token) > 10:  # Basic validation
-                # Save to config
-                self.config["huggingface_token"] = token
-                save_config(self.config)
-                self._refresh_settings_menu()
-
-                rumps.notification(
-                    title="Token Saved",
-                    subtitle="",
-                    message="HuggingFace token saved to config",
-                    sound=False
-                )
-
-                # Continue to finalize
-                self._finalize_diarization_setup()
-            elif token:
-                rumps.alert(
-                    title="Invalid Token",
-                    message="The token seems too short. Please try again."
-                )
-        except Exception as e:
-            rumps.alert(
-                title="Error",
-                message=f"Could not prompt for token: {e}"
-            )
-
-    def _finalize_diarization_setup(self):
-        """Final step: enable diarization and test."""
-        response = rumps.alert(
-            title="Speaker Diarization Setup (3/3)",
-            message=(
-                "Setup complete! ✅\n\n"
-                "First use will download the diarization model (~1GB).\n"
-                "Diarization adds ~10-30 seconds processing time.\n\n"
-                "Enable speaker diarization now?"
-            ),
-            ok="Enable",
-            cancel="Later"
-        )
-
-        if response == 1:  # Enable
-            self.config["diarization_enabled"] = True
-            save_config(self.config)
-            self._refresh_settings_menu()
-
-            rumps.notification(
-                title="Speaker Diarization Enabled",
-                subtitle="",
-                message="Your next transcription will identify speakers",
                 sound=False
             )
 
@@ -1542,170 +1334,38 @@ read -n 1
         )
 
     def status_clicked(self, _):
-        """Handle click on status item - show error details or info."""
-        if self._last_error:
-            # Show error details with options
-            error_info = self._last_error
-            response = rumps.alert(
-                title="Model Load Error",
-                message=(
-                    f"Model: {error_info.get('model', 'Unknown')}\n\n"
-                    f"Error: {error_info.get('error', 'Unknown')[:200]}\n\n"
-                    f"Time: {error_info.get('time', 'Unknown')}\n\n"
-                    "Would you like to try reloading the model?"
-                ),
-                ok="Reload Model",
-                cancel="View Full Logs"
-            )
-            if response == 1:  # Reload
-                self.reload_model(None)
-            else:  # View logs
-                self.view_logs(None)
-        elif self.transcriber is None:
+        """Handle click on status item — show daemon state."""
+        is_online = getattr(self, "daemon_health", None) and self.daemon_health.online
+        if is_online:
+            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
+            provider = self.config.get("stt_provider", "parakeet")
             rumps.alert(
-                title="Loading...",
-                message="Model is still loading. Please wait."
+                title="Daemon Ready",
+                message=(
+                    f"Provider: {provider}\n"
+                    f"Model (parakeet): {model_name}\n"
+                    f"Daemon: {DAEMON_BASE_URL}\n\n"
+                    "Click the mic icon to start recording!"
+                ),
             )
         else:
-            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-            model_info = self._get_model_by_id(model_name)
-            if model_info:
-                rumps.alert(
-                    title="Parakeet Ready",
-                    message=(
-                        f"Model: {model_info['name']}\n"
-                        f"Languages: {model_info.get('languages', 'Unknown')}\n"
-                        f"Accuracy: {model_info.get('wer', 'N/A')}\n\n"
-                        "Click the mic icon to start recording!"
-                    )
-                )
-
-    def reload_model(self, _):
-        """Reload the current model (useful after errors)."""
-        if self.recording or self.processing:
-            rumps.notification(
-                title="Cannot Reload",
-                subtitle="",
-                message="Please wait until current operation completes",
-                sound=False
+            response = rumps.alert(
+                title="Daemon Offline",
+                message=(
+                    f"No response from {DAEMON_BASE_URL}.\n\n"
+                    "Start it from the Server submenu, or view logs."
+                ),
+                ok="Start Daemon",
+                cancel="View Logs",
             )
-            return
+            if response == 1:
+                self.start_server(None)
+            else:
+                self.view_daemon_logs(None)
 
-        model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-        model_short = self._get_model_short_name(model_name)
-
-        # Clear existing transcriber
-        self.transcriber = None
-        self._last_error = None
-
-        # Reset status
-        self.status_item.title = f"Reloading {model_short}..."
-
-        logger.info(f"User requested model reload: {model_name}")
-
-        # Reload in background
-        threading.Thread(target=self._init_transcriber_with_download, daemon=True).start()
-
-        rumps.notification(
-            title="Reloading Model",
-            subtitle=model_short,
-            message="Model is being reloaded...",
-            sound=False
-        )
-
-    def predownload_model(self, _):
-        """Pre-download a model with progress display in Terminal."""
-        # Build list of models not yet cached
-        uncached = []
-        for model in AVAILABLE_MODELS:
-            if not self._is_model_cached(model["id"]):
-                uncached.append(model)
-
-        if not uncached:
-            rumps.alert(
-                title="All Models Cached",
-                message="All available models are already downloaded!"
-            )
-            return
-
-        # Show selection dialog
-        model_list = "\n".join([f"  {i+1}. {m['name']} ({m['size']})" for i, m in enumerate(uncached)])
-
-        script = f'''
-        tell application "System Events"
-            display dialog "Select model to download:\\n\\n{model_list}\\n\\nEnter number (1-{len(uncached)}):" default answer "1" with title "Download Model" buttons {{"Cancel", "Download"}} default button "Download"
-            if button returned of result is "Download" then
-                return text returned of result
-            end if
-        end tell
-        '''
-
-        try:
-            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-            choice = result.stdout.strip()
-
-            if choice and choice.isdigit():
-                idx = int(choice) - 1
-                if 0 <= idx < len(uncached):
-                    model = uncached[idx]
-                    self._download_model_in_terminal(model)
-        except Exception as e:
-            rumps.alert(title="Error", message=str(e))
-
-    def _download_model_in_terminal(self, model):
-        """Download a model with visible progress in Terminal."""
-        model_id = model["id"]
-        model_name = model["name"]
-        model_size = model.get("size", "unknown size")
-        python_path = sys.executable
-
-        download_cmd = f'''
-clear
-echo "══════════════════════════════════════════════════════════════"
-echo "  Downloading: {model_name}"
-echo "══════════════════════════════════════════════════════════════"
-echo ""
-echo "Model: {model_id}"
-echo "Size: {model_size}"
-echo ""
-echo "Downloading from HuggingFace..."
-echo ""
-"{python_path}" -c "
-from huggingface_hub import snapshot_download
-import sys
-
-def progress_callback(progress):
-    pass  # HF handles its own progress bar
-
-print('Starting download...')
-try:
-    path = snapshot_download('{model_id}', local_files_only=False)
-    print(f'\\n✅ Download complete!')
-    print(f'Saved to: {{path}}')
-except Exception as e:
-    print(f'\\n❌ Download failed: {{e}}')
-    sys.exit(1)
-"
-echo ""
-echo "Press any key to close..."
-read -n 1
-'''
-
-        script = f'''
-        tell application "Terminal"
-            activate
-            do script "{download_cmd.replace('"', '\\"').replace('\n', '\\n')}"
-        end tell
-        '''
-
-        try:
-            subprocess.run(["osascript", "-e", script], check=True)
-            self.status_item.title = f"Downloading... (see Terminal)"
-        except Exception as e:
-            rumps.alert(
-                title="Could not open Terminal",
-                message=f"Error: {e}"
-            )
+    def restart_daemon(self, _):
+        """Kickstart the launchd daemon (replaces old reload_model)."""
+        self.restart_server(None)
 
     def _populate_history_menu(self):
         """Populate the history submenu."""
@@ -1786,245 +1446,27 @@ read -n 1
         self._save_history()
         self._refresh_history_menu()
 
-    def _init_transcriber(self):
-        """Initialize transcriber in background with progress feedback."""
-        model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-        model_short = self._get_model_short_name(model_name)
-
-        try:
-            logger.info(f"Initializing transcriber with model: {model_name}")
-            model_info = self._get_model_by_id(model_name) or {}
-
-            # Check if model is cached
-            is_cached = self._is_model_cached(model_name)
-            logger.info(f"Model cached: {is_cached}")
-
-            if is_cached:
-                self.status_item.title = f"Loading {model_short}..."
-            else:
-                # Model needs to be downloaded
-                size = model_info.get("size", "~1GB")
-                self.status_item.title = f"Downloading {model_short}..."
-
-                if self.config.get("show_notifications", True):
-                    rumps.notification(
-                        title="Downloading Model",
-                        subtitle=model_short,
-                        message=f"First-time download: {size}\nThis may take a few minutes...",
-                        sound=False
-                    )
-
-            # Import and load model
-            logger.info("Importing AudioTranscriber...")
-            from parakeet_mlx_guiapi.transcription.transcriber import AudioTranscriber
-
-            logger.info(f"Creating AudioTranscriber with model: {model_name}")
-            logger.info("This may take a moment for first load...")
-
-            try:
-                self.transcriber = AudioTranscriber(model_name=model_name)
-                logger.info("AudioTranscriber created successfully")
-            except Exception as load_error:
-                logger.error(f"AudioTranscriber creation failed: {load_error}")
-                logger.error(f"Model ID: {model_name}")
-                raise
-
-            logger.info("Model loaded successfully")
-            self.status_item.title = f"Ready: {model_short}"
-            self._last_error = None
-
-            if self.config.get("show_notifications", True):
-                msg = "Model loaded from cache" if is_cached else "Download complete!"
-                rumps.notification(
-                    title="Parakeet Ready",
-                    subtitle=model_short,
-                    message=f"{msg}\nClick the mic icon to record",
-                    sound=False
-                )
-
-        except Exception as e:
-            error_msg = str(e)
-            error_trace = traceback.format_exc()
-            logger.error(f"Failed to load model: {error_msg}")
-            logger.error(f"Traceback:\n{error_trace}")
-
-            self._last_error = {
-                "model": model_name,
-                "error": error_msg,
-                "traceback": error_trace,
-                "time": datetime.now().isoformat()
-            }
-
-            self.status_item.title = "⚠️ Error - Click for options"
-            rumps.notification(
-                title="Parakeet Error",
-                subtitle=f"Failed to load {model_short}",
-                message=f"{error_msg[:80]}...\nCheck Settings > View Logs",
-                sound=True
-            )
-
-    def _is_model_cached(self, model_name):
-        """Check if a model is already downloaded/cached."""
-        try:
-            from huggingface_hub import try_to_load_from_cache
-            # Try to find the config file in cache
-            cached = try_to_load_from_cache(model_name, "config.json")
-            return cached is not None
-        except Exception:
-            # If we can't check, assume not cached
-            return False
-
     def select_model(self, model):
-        """Change the transcription model."""
+        """Change the transcription model (config-only; daemon picks it up per request)."""
         if self.recording or self.processing:
             rumps.notification(
                 title="Cannot Change Model",
                 subtitle="",
                 message="Please wait until current operation completes",
-                sound=False
+                sound=False,
             )
             return
 
-        # Check if model needs to be downloaded
-        is_cached = self._is_model_cached(model["id"])
-
-        if not is_cached:
-            # Model needs download - ask user and show progress in Terminal
-            response = rumps.alert(
-                title="Download Required",
-                message=(
-                    f"Model: {model['name']}\n"
-                    f"Size: {model.get('size', 'unknown')}\n\n"
-                    "This model needs to be downloaded first.\n"
-                    "Download progress will be shown in Terminal."
-                ),
-                ok="Download",
-                cancel="Cancel"
-            )
-
-            if response != 1:  # User cancelled
-                return
-
-            # Download in Terminal with progress, then load
-            self._download_and_load_model(model)
-        else:
-            # Model is cached, load directly
-            self._switch_to_model(model)
-
-    def _switch_to_model(self, model):
-        """Switch to an already-cached model."""
-        # Update config
         self.config["model_name"] = model["id"]
         save_config(self.config)
-
-        # Update menu
         self._refresh_model_menu()
 
-        # Reload transcriber for direct transcription
-        self.transcriber = None
-        self.status_item.title = f"Loading {model['name']}..."
-        threading.Thread(target=self._init_transcriber, daemon=True).start()
-
-        # Restart server if running to use new model
-        if self._server_process and self._server_process.poll() is None:
-            logger.info(f"Restarting server for model change: {model['id']}")
-            threading.Thread(target=self._restart_server_for_model_change, daemon=True).start()
-
-        rumps.notification(
-            title="Loading Model",
-            subtitle=model["name"],
-            message="Loading from cache...",
-            sound=False
-        )
-
-    def _restart_server_for_model_change(self):
-        """Restart the server after a brief delay to allow model to load."""
-        time.sleep(2)  # Give the transcriber time to start loading
-        self.restart_server(None)
-
-    def _download_and_load_model(self, model):
-        """Download a model in Terminal with progress, then load it."""
-        model_id = model["id"]
-        model_name = model["name"]
-        model_size = model.get("size", "unknown size")
-        python_path = sys.executable
-
-        # Update config now so it loads this model after download
-        self.config["model_name"] = model_id
-        save_config(self.config)
-        self._refresh_model_menu()
-
-        download_cmd = f'''
-clear
-echo "══════════════════════════════════════════════════════════════"
-echo "  Downloading: {model_name}"
-echo "══════════════════════════════════════════════════════════════"
-echo ""
-echo "Model: {model_id}"
-echo "Size: {model_size}"
-echo ""
-"{python_path}" -c "
-from huggingface_hub import snapshot_download
-import sys
-
-print('Downloading from HuggingFace...')
-print('(Progress bar will appear below)')
-print('')
-
-try:
-    path = snapshot_download('{model_id}', local_files_only=False)
-    print('')
-    print('✅ Download complete!')
-    print(f'Saved to: {{path}}')
-    print('')
-    print('The model will now load in Parakeet.')
-except Exception as e:
-    print(f'')
-    print(f'❌ Download failed: {{e}}')
-    sys.exit(1)
-"
-echo ""
-echo "You can close this window."
-echo "Press any key to close..."
-read -n 1
-'''
-
-        script = f'''
-        tell application "Terminal"
-            activate
-            do script "{download_cmd.replace('"', '\\"').replace('\n', '\\n')}"
-        end tell
-        '''
-
-        try:
-            subprocess.run(["osascript", "-e", script], check=True)
-            self.status_item.title = f"Downloading... (see Terminal)"
-
-            # Start a background thread to wait for download and then load
-            def wait_and_load():
-                # Poll until model is cached
-                for _ in range(600):  # Max 10 minutes
-                    time.sleep(1)
-                    if self._is_model_cached(model_id):
-                        # Model downloaded, now load it
-                        self.status_item.title = f"Loading {model_name}..."
-                        self._init_transcriber()
-                        return
-                # Timeout
-                self.status_item.title = "Download timeout"
-                rumps.notification(
-                    title="Download Timeout",
-                    subtitle="",
-                    message="Model download took too long. Try again.",
-                    sound=True
-                )
-
-            threading.Thread(target=wait_and_load, daemon=True).start()
-
-        except Exception as e:
-            rumps.alert(
-                title="Could not open Terminal",
-                message=f"Error: {e}"
+        if self.config.get("show_notifications", True):
+            rumps.notification(
+                title="Model Selected",
+                subtitle=model["name"],
+                message="Daemon will use this model on the next request.",
+                sound=False,
             )
 
     def set_chunk_duration(self, duration):
@@ -2095,6 +1537,21 @@ read -n 1
 
     def start_recording(self):
         """Start recording from microphone."""
+        # Preflight: don't start recording if the daemon is known-offline.
+        # check_once() is cheap (2s timeout) and avoids the case where the
+        # 30s background poller hasn't observed a recent failure yet.
+        if getattr(self, "daemon_health", None) is not None:
+            if self.daemon_health._online is False or not self.daemon_health.check_once():
+                logger.warning("start_recording: daemon offline — aborting")
+                rumps.notification(
+                    title="Daemon offline",
+                    subtitle="",
+                    message="Start it from the Server submenu, then try again.",
+                    sound=True,
+                )
+                self.daemon_health._set(False)
+                return
+
         try:
             import sounddevice as sd
             import numpy as np
@@ -2218,352 +1675,257 @@ read -n 1
         ).start()
 
     def _process_audio(self, recording_duration):
-        """Process recorded audio and transcribe (with optional diarization)."""
+        """Encode recorded audio as WAV and POST it to the daemon."""
         import numpy as np
         from scipy.io import wavfile
+        import io
 
         process_start = time.time()
-        logger.info(f"_process_audio: Starting processing for {recording_duration:.1f}s recording")
+        logger.info(
+            "_process_audio: starting for %.1fs recording", recording_duration
+        )
 
         try:
-            # Concatenate audio data
+            # Concatenate audio chunks → WAV bytes (no temp file needed)
             audio_data = np.concatenate(self._audio_data, axis=0)
-            logger.info(f"_process_audio: Audio data shape: {audio_data.shape}")
-
-            # Convert to int16 for WAV
             audio_int16 = (audio_data * 32767).astype(np.int16)
+            buf = io.BytesIO()
+            wavfile.write(buf, self.sample_rate, audio_int16)
+            wav_bytes = buf.getvalue()
+            logger.info("_process_audio: WAV encoded, %d bytes", len(wav_bytes))
 
-            # Save to temp file
-            temp_file = tempfile.NamedTemporaryFile(
-                suffix='.wav',
-                delete=False,
-                prefix='parakeet_menubar_'
-            )
-            temp_path = temp_file.name
-            temp_file.close()
-            wavfile.write(temp_path, self.sample_rate, audio_int16)
-
-            # Wait for transcriber if not ready
-            wait_count = 0
-            while self.transcriber is None and wait_count < 60:
-                time.sleep(0.5)
-                wait_count += 1
-
-            if self.transcriber is None:
-                raise Exception("Model not loaded. Please wait and try again.")
-
-            # Transcribe
-            logger.info("_process_audio: Starting transcription...")
+            # POST to daemon
             transcribe_start = time.time()
-            chunk_duration = self.config.get("default_chunk_duration", 120)
-            df, full_text = self.transcriber.transcribe(
-                temp_path,
-                chunk_duration=chunk_duration
-            )
+            payload = self.client.transcribe(wav_bytes, self.config, recording_duration)
             transcribe_time = time.time() - transcribe_start
-            logger.info(f"_process_audio: Transcription complete in {transcribe_time:.2f}s")
+            logger.info(
+                "_process_audio: daemon responded in %.2fs", transcribe_time
+            )
 
-            # Handle None result
-            if full_text is None:
-                logger.warning("_process_audio: Transcription returned None")
-                full_text = ""
-            logger.info(f"_process_audio: Result: {len(full_text)} chars")
-
-            # === Speaker Diarization (optional) ===
-            output_text = full_text
+            output_text = (payload.get("text") or "").strip()
+            # Best-effort speaker count from segments (daemon-side diarization)
             num_speakers = 0
-
-            diarization_enabled = self.config.get("diarization_enabled", False)
-            logger.info(f"_process_audio: Diarization enabled={diarization_enabled}, df is None={df is None}")
-
-            if diarization_enabled and df is not None:
-                try:
-                    logger.info("_process_audio: Starting speaker diarization...")
-                    self.status_item.title = "Identifying speakers..."
-                    from parakeet_mlx_guiapi.diarization import SpeakerDiarizer
-
-                    # Initialize diarizer if needed
-                    if not hasattr(self, '_diarizer') or self._diarizer is None:
-                        self._diarizer = SpeakerDiarizer()
-
-                    # Get speaker count setting (0 = auto-detect)
-                    configured_speakers = self.config.get("diarization_num_speakers", 0)
-
-                    # Run diarization with speaker hint if configured
-                    if configured_speakers > 0:
-                        diarization = self._diarizer.diarize(
-                            temp_path,
-                            num_speakers=configured_speakers
-                        )
-                    else:
-                        diarization = self._diarizer.diarize(temp_path)
-                    num_speakers = diarization.num_speakers
-
-                    logger.info(f"_process_audio: Diarization complete, found {num_speakers} speakers")
-
-                    # Convert DataFrame to list of dicts for merging
-                    segments = df.to_dict('records')
-
-                    # Format with speaker labels (markdown format)
-                    output_text = diarization.format_transcript_markdown(segments)
-                    logger.info(f"_process_audio: Formatted transcript with speaker labels")
-
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.error(f"_process_audio: Diarization failed - {e}", exc_info=True)
-
-                    # Provide helpful error messages for common issues
-                    if "403" in error_msg or "restricted" in error_msg or "authorized" in error_msg:
-                        rumps.notification(
-                            title="Diarization Access Denied",
-                            subtitle="Model license not accepted",
-                            message="Visit huggingface.co/pyannote to accept the model license",
-                            sound=True
-                        )
-                    elif "401" in error_msg or "token" in error_msg.lower():
-                        rumps.notification(
-                            title="Diarization Auth Error",
-                            subtitle="Invalid HuggingFace token",
-                            message="Check your token in Settings > Speaker Diarization",
-                            sound=True
-                        )
-                    else:
-                        rumps.notification(
-                            title="Diarization Failed",
-                            subtitle="",
-                            message=error_msg[:80],
-                            sound=True
-                        )
-
-                    # Fall back to plain transcription
-                    output_text = full_text
-
-            # Clean up temp file
-            os.remove(temp_path)
+            segments = payload.get("segments") or []
+            if isinstance(segments, list) and segments:
+                speakers = {
+                    s.get("Speaker") or s.get("speaker")
+                    for s in segments
+                    if isinstance(s, dict)
+                }
+                speakers.discard(None)
+                num_speakers = len(speakers)
 
             if output_text:
-                # Copy to clipboard if enabled
                 if self.config.get("auto_copy_clipboard", True):
                     pyperclip.copy(output_text)
 
-                # Add to history
                 self._add_to_history(output_text, recording_duration)
 
-                # Show notification with preview
                 if self.config.get("show_notifications", True):
-                    preview = output_text[:80] + "..." if len(output_text) > 80 else output_text
-                    copied_msg = " - Copied!" if self.config.get("auto_copy_clipboard", True) else ""
-                    speaker_info = f" ({num_speakers} speakers)" if num_speakers > 0 else ""
+                    preview = (
+                        output_text[:80] + "..." if len(output_text) > 80 else output_text
+                    )
+                    copied_msg = (
+                        " - Copied!" if self.config.get("auto_copy_clipboard", True) else ""
+                    )
+                    speaker_info = (
+                        f" ({num_speakers} speakers)" if num_speakers > 1 else ""
+                    )
                     rumps.notification(
                         title=f"Transcription Complete{copied_msg}",
                         subtitle=f"{recording_duration:.1f}s of audio{speaker_info}",
                         message=preview,
-                        sound=True
+                        sound=True,
                     )
 
-                # Flash success icon
                 self.title = self.ICON_READY
-                threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+                threading.Timer(
+                    2.0, lambda: setattr(self, "title", self.ICON_IDLE)
+                ).start()
             else:
                 if self.config.get("show_notifications", True):
                     rumps.notification(
                         title="Transcription Empty",
                         subtitle="",
                         message="No speech detected in the recording",
-                        sound=True
+                        sound=True,
                     )
                 self.title = self.ICON_IDLE
 
-        except Exception as e:
-            logger.error(f"_process_audio: Error - {e}", exc_info=True)
+        except (requests.RequestException, requests.Timeout) as e:
+            logger.error("_process_audio: HTTP error - %s", e, exc_info=True)
             rumps.notification(
-                title="Transcription Error",
+                title="Transcription Failed",
                 subtitle="",
                 message=str(e)[:100],
-                sound=True
+                sound=True,
             )
             self.title = self.ICON_ERROR
-            threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+            threading.Timer(
+                2.0, lambda: setattr(self, "title", self.ICON_IDLE)
+            ).start()
+        except Exception as e:
+            logger.error("_process_audio: error - %s", e, exc_info=True)
+            rumps.notification(
+                title="Transcription Failed",
+                subtitle="",
+                message=str(e)[:100],
+                sound=True,
+            )
+            self.title = self.ICON_ERROR
+            threading.Timer(
+                2.0, lambda: setattr(self, "title", self.ICON_IDLE)
+            ).start()
         finally:
-            # Reset UI
             total_time = time.time() - process_start
-            logger.info(f"_process_audio: Complete. Total processing time: {total_time:.2f}s")
+            logger.info(
+                "_process_audio: complete; total processing %.2fs", total_time
+            )
             self.processing = False
             self.record_button.title = "🎤 Start Recording"
-            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-            self.status_item.title = f"Ready: {self._get_model_short_name(model_name)}"
+            is_online = (
+                getattr(self, "daemon_health", None) and self.daemon_health.online
+            )
+            self.status_item.title = (
+                "Daemon: ● ready" if is_online else "Daemon: ○ offline"
+            )
 
     # === Server Control Methods ===
 
     def start_server(self, _):
-        """Start the Flask + Gradio server."""
-        if self._server_process and self._server_process.poll() is None:
-            rumps.notification(
-                title="Server Already Running",
-                subtitle="",
-                message=f"Server is already running on port {self._server_port}",
-                sound=False
-            )
-            return
+        """Bootstrap the launchd daemon."""
+        rc, _stdout, stderr = _run_launchctl(
+            ["bootstrap", f"gui/{os.getuid()}", DAEMON_PLIST]
+        )
+        # rc 37 / "already loaded" → treat as success
+        already_loaded = (
+            rc == 37
+            or "already loaded" in (stderr or "").lower()
+            or "service is already loaded" in (stderr or "").lower()
+        )
+        success = rc == 0 or already_loaded
 
-        try:
-            # Get config
-            port = self.config.get("server_port", 8080)
-            gradio_port = self.config.get("gradio_port", 5001)
-            debug = self.config.get("server_debug", False)
-            model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-
-            # Build command
-            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
-            cmd = [
-                sys.executable, script_path,
-                "--host", "127.0.0.1",
-                "--port", str(port),
-                "--model", model_name
-            ]
-            if debug:
-                cmd.append("--debug")
-
-            # Set environment variables for Gradio port
-            env = os.environ.copy()
-            env["GRADIO_SERVER_PORT"] = str(gradio_port)
-
-            logger.info(f"Starting server: {' '.join(cmd)}")
-
-            # Start server process
-            self._server_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                start_new_session=True  # Allow it to run independently
-            )
-            self._server_port = port
-            self._gradio_port = gradio_port
-
-            # Refresh menu
+        if success:
+            self._offline_notified = False
+            self.daemon_health._set(self.daemon_health.check_once())
             self._refresh_server_menu()
-
+            msg = (
+                "Daemon already loaded."
+                if already_loaded and rc != 0
+                else "Daemon bootstrapped."
+            )
             if self.config.get("show_notifications", True):
                 rumps.notification(
-                    title="Server Started",
-                    subtitle=f"Port {port}",
-                    message=f"API: http://127.0.0.1:{port}\nWeb UI: http://127.0.0.1:{gradio_port}",
-                    sound=False
+                    title="Server", subtitle="Start", message=msg, sound=False,
                 )
-
-            logger.info(f"Server started on port {port}")
-
-        except Exception as e:
-            logger.error(f"Failed to start server: {e}", exc_info=True)
+        else:
             rumps.notification(
-                title="Server Error",
-                subtitle="Failed to start",
-                message=str(e)[:100],
-                sound=True
+                title="Server",
+                subtitle="Start failed",
+                message=(stderr or f"rc={rc}")[:100],
+                sound=True,
             )
 
     def stop_server(self, _):
-        """Stop the running server."""
-        if not self._server_process or self._server_process.poll() is not None:
+        """Bootout the launchd daemon."""
+        rc, _stdout, stderr = _run_launchctl(
+            ["bootout", f"gui/{os.getuid()}", DAEMON_PLIST]
+        )
+        not_loaded = (
+            "could not find service" in (stderr or "").lower()
+            or "service not loaded" in (stderr or "").lower()
+            or "no such process" in (stderr or "").lower()
+        )
+        success = rc == 0 or not_loaded
+
+        if success:
+            self.daemon_health._set(False)
+            self._refresh_server_menu()
+            if self.config.get("show_notifications", True):
+                rumps.notification(
+                    title="Server",
+                    subtitle="Stop",
+                    message=(
+                        "Daemon already stopped."
+                        if not_loaded and rc != 0
+                        else "Daemon stopped."
+                    ),
+                    sound=False,
+                )
+        else:
             rumps.notification(
-                title="Server Not Running",
-                subtitle="",
-                message="No server is currently running",
-                sound=False
-            )
-            return
-
-        try:
-            # Send SIGTERM for graceful shutdown
-            os.killpg(os.getpgid(self._server_process.pid), signal.SIGTERM)
-            self._server_process.wait(timeout=5)
-            logger.info("Server stopped gracefully")
-        except subprocess.TimeoutExpired:
-            # Force kill if it doesn't stop
-            os.killpg(os.getpgid(self._server_process.pid), signal.SIGKILL)
-            logger.warning("Server force-killed after timeout")
-        except Exception as e:
-            logger.error(f"Error stopping server: {e}")
-
-        self._server_process = None
-        self._refresh_server_menu()
-
-        if self.config.get("show_notifications", True):
-            rumps.notification(
-                title="Server Stopped",
-                subtitle="",
-                message="The server has been stopped",
-                sound=False
+                title="Server",
+                subtitle="Stop failed",
+                message=(stderr or f"rc={rc}")[:100],
+                sound=True,
             )
 
     def restart_server(self, _):
-        """Restart the server."""
-        self.stop_server(None)
-        time.sleep(1)
-        self.start_server(None)
+        """Kickstart the launchd daemon (restarts in place)."""
+        rc, _stdout, stderr = _run_launchctl(
+            ["kickstart", "-k", f"gui/{os.getuid()}/{DAEMON_LABEL}"]
+        )
+        if rc == 0:
+            # Give the daemon a moment, then probe
+            threading.Timer(
+                1.5,
+                lambda: self.daemon_health._set(self.daemon_health.check_once()),
+            ).start()
+            self._refresh_server_menu()
+            if self.config.get("show_notifications", True):
+                rumps.notification(
+                    title="Server",
+                    subtitle="Restart",
+                    message="Daemon kickstarted.",
+                    sound=False,
+                )
+        else:
+            rumps.notification(
+                title="Server",
+                subtitle="Restart failed",
+                message=(stderr or f"rc={rc}")[:100],
+                sound=True,
+            )
 
     def open_web_ui(self, _):
-        """Open the Gradio web UI in browser."""
-        port = self.config.get("gradio_port", 8081)
-        webbrowser.open(f"http://127.0.0.1:{port}")
+        """Open the daemon's web UI in the default browser."""
+        webbrowser.open(f"{DAEMON_BASE_URL}/")
 
     def open_live_transcription(self, _):
         """Open the live transcription page in browser."""
-        port = self.config.get("server_port", 8080)
-        webbrowser.open(f"http://127.0.0.1:{port}/live")
+        webbrowser.open(f"{DAEMON_BASE_URL}/live")
 
     def open_api_docs(self, _):
-        """Open the API documentation."""
-        port = self.config.get("server_port", 5000)
-        # Show API endpoints info
+        """Show API documentation."""
         rumps.alert(
             title="API Documentation",
             message=(
-                f"Base URL: http://127.0.0.1:{port}\n\n"
+                f"Base URL: {DAEMON_BASE_URL}\n\n"
                 "Endpoints:\n"
                 "• POST /api/transcribe - Transcribe audio file\n"
                 "• POST /api/segment - Extract audio segment\n"
                 "• GET /api/models - List available models\n\n"
                 "Example:\n"
-                f"curl -X POST -F 'file=@audio.mp3' http://127.0.0.1:{port}/api/transcribe"
-            )
+                f"curl -X POST -F 'file=@audio.mp3' {DAEMON_BASE_URL}/api/transcribe"
+            ),
         )
 
-    def set_server_port(self, port):
-        """Set the server API port."""
-        self.config["server_port"] = port
-        save_config(self.config)
-        self._refresh_server_menu()
-
-        if self.config.get("show_notifications", True):
-            rumps.notification(
-                title="Server Port Updated",
-                subtitle="",
-                message=f"API port set to {port}. Restart server to apply.",
-                sound=False
-            )
-
-    def set_gradio_port(self, port):
-        """Set the Gradio web UI port."""
-        self.config["gradio_port"] = port
-        save_config(self.config)
-        self._refresh_server_menu()
-
-        if self.config.get("show_notifications", True):
-            rumps.notification(
-                title="Gradio Port Updated",
-                subtitle="",
-                message=f"Web UI port set to {port}. Restart server to apply.",
-                sound=False
-            )
-
-    def toggle_debug_mode(self, _):
-        """Toggle server debug mode."""
-        current = self.config.get("server_debug", False)
-        self.config["server_debug"] = not current
-        save_config(self.config)
-        self._refresh_server_menu()
+    def view_daemon_logs(self, _):
+        """Open the daemon's stderr log file."""
+        try:
+            if os.path.exists(DAEMON_STDERR_LOG):
+                subprocess.run(["open", DAEMON_STDERR_LOG])
+            else:
+                rumps.alert(
+                    title="Daemon log not found",
+                    message=(
+                        f"Expected log at:\n{DAEMON_STDERR_LOG}\n\n"
+                        "Update the plist's StandardErrorPath, or start the daemon "
+                        "at least once so the launchd-owned log appears."
+                    ),
+                )
+        except Exception as e:
+            rumps.alert(title="Could not open log", message=str(e))
 
     # === Cancel Recording ===
 
@@ -2650,108 +2012,133 @@ read -n 1
 
         def do_transcribe():
             try:
-                # Wait for transcriber if needed
-                wait_count = 0
-                while self.transcriber is None and wait_count < 60:
-                    time.sleep(0.5)
-                    wait_count += 1
+                # Abort if daemon is offline
+                if not (getattr(self, "daemon_health", None) and self.daemon_health.online):
+                    rumps.notification(
+                        title="Daemon Offline",
+                        subtitle="",
+                        message="Start the daemon from the Server submenu first.",
+                        sound=True,
+                    )
+                    self.title = self.ICON_ERROR
+                    return
 
-                if self.transcriber is None:
-                    raise Exception("Model not loaded. Please wait and try again.")
-
-                # Get file info
+                # Read file + derive duration
                 file_name = os.path.basename(file_path)
                 from pydub import AudioSegment
                 audio = AudioSegment.from_file(file_path)
                 duration = audio.duration_seconds
+                with open(file_path, "rb") as f:
+                    file_bytes = f.read()
+                logger.info(f"Transcribing file: {file_name} ({duration:.1f}s)")
 
-                logger.info(f"Transcribing: {file_name} ({duration:.1f}s)")
+                # Build POST payload — preserve real filename/extension so the
+                # daemon's audio processor decodes correctly (mp3, m4a, wav, …)
+                ext = os.path.splitext(file_name)[1].lower() or ".wav"
+                content_type = {
+                    ".wav": "audio/wav",
+                    ".mp3": "audio/mpeg",
+                    ".m4a": "audio/mp4",
+                    ".flac": "audio/flac",
+                    ".ogg": "audio/ogg",
+                    ".webm": "audio/webm",
+                }.get(ext, "application/octet-stream")
 
-                # Transcribe
-                chunk_duration = self.config.get("default_chunk_duration", 120)
-                df, full_text = self.transcriber.transcribe(
-                    file_path,
-                    chunk_duration=chunk_duration
+                provider = self.config.get("stt_provider", "parakeet")
+                model = (
+                    self.config.get("model_name", "")
+                    if provider == "parakeet"
+                    else self.config.get("deepgram_model", "nova-3")
                 )
+                files = {"file": (file_name, file_bytes, content_type)}
+                data = {
+                    "provider": provider,
+                    "model": model,
+                    "deepgram_options": json.dumps(self.config.get("deepgram_options", {})),
+                    "enable_diarization": str(self.config.get("diarization_enabled", False)).lower(),
+                    "chunk_duration": str(self.config.get("default_chunk_duration", 120)),
+                    "output_format": "json",
+                }
+                timeout = max(120, int(duration * 2))
+                url = f"{self.client.base_url}/api/transcribe"
+                logger.info(f"POST {url} file={file_name} provider={provider} timeout={timeout}s")
 
-                if full_text is None:
-                    full_text = ""
+                response = requests.post(url, files=files, data=data, timeout=timeout)
+                response.raise_for_status()
+                payload = response.json()
 
-                # Handle diarization if enabled
-                output_text = full_text
+                output_text = (payload.get("text") or "").strip()
+                # Best-effort speaker count from daemon-side diarization
                 num_speakers = 0
-
-                if self.config.get("diarization_enabled", False) and df is not None:
-                    try:
-                        self.status_item.title = "Identifying speakers..."
-                        from parakeet_mlx_guiapi.diarization import SpeakerDiarizer
-
-                        if not hasattr(self, '_diarizer') or self._diarizer is None:
-                            self._diarizer = SpeakerDiarizer()
-
-                        configured_speakers = self.config.get("diarization_num_speakers", 0)
-
-                        if configured_speakers > 0:
-                            diarization = self._diarizer.diarize(
-                                file_path,
-                                num_speakers=configured_speakers
-                            )
-                        else:
-                            diarization = self._diarizer.diarize(file_path)
-
-                        num_speakers = diarization.num_speakers
-                        segments = df.to_dict('records')
-                        output_text = diarization.format_transcript_markdown(segments)
-
-                    except Exception as e:
-                        logger.error(f"Diarization failed: {e}")
-                        output_text = full_text
+                segments = payload.get("segments") or []
+                if isinstance(segments, list) and segments:
+                    speakers = {
+                        s.get("Speaker") or s.get("speaker")
+                        for s in segments
+                        if isinstance(s, dict)
+                    }
+                    speakers.discard(None)
+                    num_speakers = len(speakers)
 
                 if output_text:
-                    # Copy to clipboard if enabled
                     if self.config.get("auto_copy_clipboard", True):
                         pyperclip.copy(output_text)
-
-                    # Add to history
                     self._add_to_history(output_text, duration)
-
-                    # Show notification
                     if self.config.get("show_notifications", True):
-                        preview = output_text[:80] + "..." if len(output_text) > 80 else output_text
-                        copied_msg = " - Copied!" if self.config.get("auto_copy_clipboard", True) else ""
-                        speaker_info = f" ({num_speakers} speakers)" if num_speakers > 0 else ""
+                        preview = (
+                            output_text[:80] + "..." if len(output_text) > 80 else output_text
+                        )
+                        copied_msg = (
+                            " - Copied!" if self.config.get("auto_copy_clipboard", True) else ""
+                        )
+                        speaker_info = (
+                            f" ({num_speakers} speakers)" if num_speakers > 1 else ""
+                        )
                         rumps.notification(
                             title=f"Transcription Complete{copied_msg}",
                             subtitle=f"{file_name}{speaker_info}",
                             message=preview,
-                            sound=True
+                            sound=True,
                         )
-
                     self.title = self.ICON_READY
-                    threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+                    threading.Timer(2.0, lambda: setattr(self, "title", self.ICON_IDLE)).start()
                 else:
                     rumps.notification(
                         title="Transcription Empty",
                         subtitle="",
                         message="No speech detected in the audio file",
-                        sound=True
+                        sound=True,
                     )
                     self.title = self.ICON_IDLE
 
+            except (requests.RequestException, requests.Timeout) as e:
+                logger.error(f"File transcription HTTP error: {e}", exc_info=True)
+                rumps.notification(
+                    title="Transcription Failed",
+                    subtitle="",
+                    message=str(e)[:100],
+                    sound=True,
+                )
+                self.title = self.ICON_ERROR
+                threading.Timer(2.0, lambda: setattr(self, "title", self.ICON_IDLE)).start()
             except Exception as e:
                 logger.error(f"File transcription error: {e}", exc_info=True)
                 rumps.notification(
                     title="Transcription Error",
                     subtitle="",
                     message=str(e)[:100],
-                    sound=True
+                    sound=True,
                 )
                 self.title = self.ICON_ERROR
-                threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+                threading.Timer(2.0, lambda: setattr(self, "title", self.ICON_IDLE)).start()
             finally:
                 self.processing = False
-                model_name = self.config.get("model_name", AVAILABLE_MODELS[0]["id"])
-                self.status_item.title = f"Ready: {self._get_model_short_name(model_name)}"
+                is_online = (
+                    getattr(self, "daemon_health", None) and self.daemon_health.online
+                )
+                self.status_item.title = (
+                    "Daemon: ● ready" if is_online else "Daemon: ○ offline"
+                )
 
         threading.Thread(target=do_transcribe, daemon=True).start()
 
@@ -2799,11 +2186,12 @@ read -n 1
         else:
             model_info = f"Current model: {current_model_id}"
 
-        # Server status
-        if self._server_process and self._server_process.poll() is None:
-            server_status = f"Server: Running (port {self._server_port})"
-        else:
-            server_status = "Server: Stopped"
+        # Daemon status (launchctl-managed; menu bar just observes)
+        server_status = (
+            "Daemon: ● Running (port 8080)"
+            if getattr(self, "daemon_health", None) and self.daemon_health.online
+            else "Daemon: ○ Stopped"
+        )
 
         rumps.alert(
             title="Parakeet Voice-to-Clipboard",
@@ -2834,16 +2222,12 @@ read -n 1
                 self._stream.stop()
                 self._stream.close()
 
-        # Stop server if running
-        if self._server_process and self._server_process.poll() is None:
-            try:
-                os.killpg(os.getpgid(self._server_process.pid), signal.SIGTERM)
-                self._server_process.wait(timeout=3)
-            except Exception:
-                try:
-                    os.killpg(os.getpgid(self._server_process.pid), signal.SIGKILL)
-                except Exception:
-                    pass
+        # Stop daemon health probe (the launchd daemon itself stays running)
+        try:
+            if getattr(self, "daemon_health", None):
+                self.daemon_health.stop()
+        except Exception:
+            pass
 
         rumps.quit_application()
 
