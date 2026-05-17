@@ -809,6 +809,56 @@ class ParakeetMenuBarApp(rumps.App):
                 return model["size"]
         return "Unknown"
 
+    def predownload_model(self, _):
+        """Models are downloaded by the daemon on first use."""
+        rumps.notification(
+            title="Daemon Handles Downloads",
+            subtitle="",
+            message="Models are fetched lazily by the daemon on first use.",
+            sound=False,
+        )
+
+    def reload_model(self, _):
+        """Restart the daemon to reload the model with new config."""
+        rc, _stdout, stderr = _run_launchctl(
+            ["kickstart", "-k", f"gui/{os.getuid()}/com.gui.parakeet"]
+        )
+        if rc == 0:
+            rumps.notification(
+                title="Daemon Restarted",
+                subtitle="",
+                message="Model will reload on next request.",
+                sound=False,
+            )
+        else:
+            rumps.notification(
+                title="Restart Failed",
+                subtitle="",
+                message=(stderr or "Unknown error")[:100],
+                sound=True,
+            )
+
+    def start_diarization_setup(self, _):
+        """Diarization dependencies are owned by the daemon."""
+        rumps.notification(
+            title="Daemon Handles Diarization",
+            subtitle="",
+            message="Pyannote install + HF token are configured on the daemon side.",
+            sound=False,
+        )
+
+    # Daemon now owns diarization availability/dependency checks.
+    # These stubs preserve _populate_settings_menu's call sites without
+    # re-introducing local pyannote/HF probes in the thin client.
+    def _check_diarization_available(self):
+        return True, "Handled by daemon"
+
+    def _check_all_models_accessible(self):
+        return []
+
+    def _check_diarization_components(self):
+        return True, True
+
     def _populate_settings_menu(self):
         """Populate the settings submenu."""
         # === Diarization (Speaker ID) ===
