@@ -30,6 +30,8 @@ A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella
 
 ## Quick Start 🚀
 
+> **Architecture note**: The menu bar app is a **thin HTTP client** of a long-running server. Both options below start that server — Option A also installs the menu bar UI on top. The server (daemon) owns all inference; the menu bar only captures audio and POSTs it to `/api/transcribe`.
+
 ### Option A: Menu Bar App (Recommended for Daily Use)
 
 ```bash
@@ -243,9 +245,10 @@ This script will:
 4. Launch the app
 
 **First Launch:**
-- If the model isn't cached, Terminal will open showing download progress
-- The default model (TDT 0.6B v3 Multilingual, ~1.2GB) downloads automatically
-- Status bar shows "Downloading..." until complete
+- The menu bar app itself launches instantly — no model loading in this process
+- It probes the daemon (`GET /api/models` on `localhost:8080`); if the daemon is down, the status shows `Daemon: ○ offline` and offers `Server > Start`
+- On first transcription request, the daemon loads the model (~10-15s) from the HuggingFace cache at `/Volumes/models/huggingface/hub/` (or wherever `HF_HOME` points)
+- If the model isn't cached, the daemon will fetch it on first request (~1.2GB for the default TDT 0.6B v3 Multilingual)
 
 After installation, find **Parakeet** in:
 - Your **menu bar** (🎤 icon in the top-right)
@@ -263,14 +266,14 @@ After installation, find **Parakeet** in:
 
 | Feature | Description |
 |---------|-------------|
-| **Model Selection** | Switch between models organized by category (Multilingual, English, Fast, etc.) |
-| **Download Progress** | Model downloads show progress in Terminal window |
+| **Model Selection** | Switch between models organized by category; selection is sent per-request to the daemon |
+| **Daemon Health** | Status item shows `Daemon: ● ready` or `Daemon: ○ offline`; polled every 30s |
 | **Recording Timer** | See elapsed time while recording (🔴 0:15) |
-| **Transcription History** | Access last 20 transcriptions, click to copy again |
-| **Speaker Diarization** | Identify who said what (requires one-time setup) |
+| **Transcription History** | Access last 10 transcriptions, click to copy again |
+| **Speaker Diarization** | Toggle on/off; the daemon handles model availability and inference |
+| **Server submenu** | `Start` / `Stop` / `Restart` call `launchctl bootstrap` / `bootout` / `kickstart` against `com.gui.parakeet` |
 | **Settings** | Configure chunk duration, auto-copy, notifications |
-| **Advanced Settings** | View Python/cache paths, pre-download models, open config |
-| **Status Display** | See current model and ready/loading state |
+| **Status Display** | Daemon liveness + current provider |
 
 #### Available Models
 
@@ -340,8 +343,8 @@ echo '{"huggingface_token": "hf_your_token_here"}' > ~/.parakeet_mlx_guiapi.json
 If you prefer to install manually:
 
 ```bash
-# 1. Install dependencies
-pip install py2app rumps pyobjc-framework-Cocoa parakeet-mlx
+# 1. Install thin-client deps (model libs live on the daemon, not the menu bar)
+pip install py2app rumps pyobjc-framework-Cocoa pyperclip sounddevice requests scipy numpy
 
 # 2. Build the app (alias mode for faster build)
 python setup_app.py py2app --alias
@@ -349,11 +352,14 @@ python setup_app.py py2app --alias
 # 3. Copy to Applications
 cp -R dist/Parakeet.app /Applications/
 
-# 4. Launch
+# 4. Make sure the launchd daemon is loaded (the menu bar requires it)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gui.parakeet.plist
+
+# 5. Launch
 open /Applications/Parakeet.app
 ```
 
-Note: The app requires Python and dependencies to remain installed (alias mode).
+Note: The app is alias mode — it symlinks back to your `.venv`. Moving the `.venv` breaks `/Applications/Parakeet.app`.
 
 #### Start at Login
 

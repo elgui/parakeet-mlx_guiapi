@@ -1,5 +1,25 @@
+# Virtual environments
 /.venv
+venv/
+
+# Python bytecode
 __pycache__/
-./__pycache__/
 *.pyc
-parakeet_mlx_guiapi/transcription/__pycache__/transcriber.cpython-312.pyc
+*.pyo
+
+# Build artifacts (py2app, setuptools, egg-info)
+/build/
+/dist/
+*.egg-info/
+
+# Daemon logs (launchd writes here when daemon runs under com.gui.parakeet)
+/stderr.log
+/stdout.log
+
+# OS / IDE noise
+.DS_Store
+.vscode/
+.idea/
+
+# Local agent worktrees (created by Claude Code background agents)
+/.claude/worktrees/
