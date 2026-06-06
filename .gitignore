@@ -16,6 +16,10 @@ __pycache__/
 /stderr.log
 /stdout.log
 
+# Local Model Server logs (engine + gateway launchd services)
+/local_model_engine.log
+/local_model_server.log
+
 # OS / IDE noise
 .DS_Store
 .vscode/

@@ -15,6 +15,7 @@ class ProviderType(Enum):
     """Available provider types."""
     PARAKEET = "parakeet"  # Local MLX-based transcription + pyannote diarization
     DEEPGRAM = "deepgram"  # Cloud-based STT with built-in diarization
+    OPENAI_AUDIO = "openai_audio"  # OpenAI-compatible /audio/transcriptions (local LLM server)
 
 
 @dataclass
@@ -178,5 +179,8 @@ def get_provider(provider_type: ProviderType, **config) -> STTProvider:
     elif provider_type == ProviderType.DEEPGRAM:
         from .deepgram import DeepgramProvider
         return DeepgramProvider(**config)
+    elif provider_type == ProviderType.OPENAI_AUDIO:
+        from .openai_audio import OpenAITranscriptionProvider
+        return OpenAITranscriptionProvider(**config)
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")

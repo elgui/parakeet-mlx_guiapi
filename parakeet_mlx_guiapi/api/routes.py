@@ -59,6 +59,8 @@ def get_stt_provider(provider=None, model=None, deepgram_options=None, enable_di
             model = config["model_name"]
         elif provider == ProviderType.DEEPGRAM.value:
             model = config.get("deepgram_model", "nova-3")
+        elif provider == ProviderType.OPENAI_AUDIO.value:
+            model = config.get("openai_audio_model", "stub")
 
     if deepgram_options is None:
         deepgram_options = config.get("deepgram_options", {})
@@ -86,6 +88,13 @@ def get_stt_provider(provider=None, model=None, deepgram_options=None, enable_di
                 api_key=config.get("deepgram_api_key"),
                 model=model,
                 options=deepgram_options
+            )
+        elif provider == ProviderType.OPENAI_AUDIO.value:
+            _stt_provider_cache[cache_key] = get_provider(
+                ProviderType.OPENAI_AUDIO,
+                base_url=config.get("openai_audio_base_url"),
+                model=model,
+                api_key=config.get("openai_audio_api_key"),
             )
         else:
             raise ValueError(f"Unknown provider: {provider}")
@@ -164,8 +173,13 @@ def setup_api_routes(app):
             provider = None
         elif provider is not None:
             provider = provider.lower()
-            if provider not in {ProviderType.PARAKEET.value, ProviderType.DEEPGRAM.value}:
-                return jsonify({"error": "provider must be 'parakeet' or 'deepgram'"}), 400
+            valid_providers = {
+                ProviderType.PARAKEET.value,
+                ProviderType.DEEPGRAM.value,
+                ProviderType.OPENAI_AUDIO.value,
+            }
+            if provider not in valid_providers:
+                return jsonify({"error": f"provider must be one of {sorted(valid_providers)}"}), 400
 
         model = request.form.get('model')
         if model == '':

@@ -18,7 +18,12 @@ DEFAULT_CONFIG = {
     "default_overlap_duration": 15,
     "max_upload_size_mb": 100,
     "supported_formats": [".mp3", ".wav", ".m4a", ".flac", ".ogg"],
-    "debug": False
+    "debug": False,
+    # Local Model Server gateway (OpenAI-compatible; see local_model_server.py).
+    # Routes audio -> gemma-4-qat on the llama.cpp engine for transcription.
+    "openai_audio_base_url": "http://localhost:8123/v1",
+    "openai_audio_model": "gemma-4-12B-it-QAT-Q4_0.gguf",
+    "openai_audio_api_key": None,
 }
 
 # Global configuration

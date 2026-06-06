@@ -35,9 +35,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gui.parakeet.plist  
 | `chunk_duration` | float (s) | `120` | Long-audio chunking. `0` disables chunking. |
 | `overlap_duration` | float (s) | `15` | Overlap between chunks (parakeet path). |
 | `highlight_words` | bool | `false` | `true`/`false`. |
-| `provider` | string | config | `parakeet` (local) or `deepgram` (cloud, needs key). Omit for default. |
+| `provider` | string | config | `parakeet` (local), `deepgram` (cloud, needs key), or `openai_audio` (local LLM via the Local Model Server). Omit for default. |
 | `model` | string | config | Override model name. |
-| `enable_diarization` | bool | config | `true`/`false`. Speaker labels. |
+| `enable_diarization` | bool | config | `true`/`false`. Speaker labels. (Not supported by `openai_audio`.) |
 | `deepgram_options` | JSON string | — | Only when `provider=deepgram`. |
 
 **Fastest integration — plain text:**
@@ -80,7 +80,7 @@ not inline text — write the response body to a file.
 |--------|------|
 | 400 | `{"error": "No file part"}` — `file` field missing |
 | 400 | `{"error": "No selected file"}` — empty filename |
-| 400 | `{"error": "provider must be 'parakeet' or 'deepgram'"}` |
+| 400 | `{"error": "provider must be one of ['deepgram', 'openai_audio', 'parakeet']"}` |
 | 400 | `{"error": "enable_diarization must be 'true' or 'false'"}` |
 | 400 | `{"error": "deepgram_options must be valid JSON"}` |
 | 500 | `{"error": "<exception message>"}` |

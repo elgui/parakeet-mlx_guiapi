@@ -23,6 +23,14 @@ numpy>=1.24.0,<2.4  # Numba requires NumPy <2.4
 # HTTP client
 requests>=2.31.0
 
+# Local Model Server gateway (local_model_server.py) — OpenAI-compatible gateway/adapter
+# proxying to a llama.cpp omni engine (text/image/audio) + /v1/audio/transcriptions
+fastapi>=0.110.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9
+httpx>=0.27.0
+soundfile>=0.12.0
+
 # macOS menu bar app
 rumps>=0.4.0
 py2app>=0.28.0

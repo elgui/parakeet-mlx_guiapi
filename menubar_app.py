@@ -221,6 +221,13 @@ AVAILABLE_PROVIDERS = [
             "numerals": {"name": "Numerals", "description": "Convert numbers to digits", "default": False},
         },
     },
+    {
+        "id": "openai_audio",
+        "name": "Local Model Server (gemma audio)",
+        "description": "Self-hosted LLM transcription via the Local Model Server gateway",
+        "requires_api_key": False,
+        "models": [],  # discovered live from the gateway's /v1/models
+    },
 ]
 
 
@@ -259,6 +266,8 @@ class TranscriptionClient:
         provider = config.get("stt_provider", "parakeet")
         if provider == "parakeet":
             model = config.get("model_name", "")
+        elif provider == "openai_audio":
+            model = config.get("openai_audio_model", "stub")
         else:
             model = config.get("deepgram_model", "nova-3")
 
@@ -691,6 +700,8 @@ class ParakeetMenuBarApp(rumps.App):
             self._populate_parakeet_models()
         elif current_provider == "deepgram":
             self._populate_deepgram_models()
+        elif current_provider == "openai_audio":
+            self._populate_openai_audio_models()
 
     def _populate_parakeet_models(self):
         """Populate Parakeet model menu organized by category."""
@@ -787,6 +798,69 @@ class ParakeetMenuBarApp(rumps.App):
             self.model_menu.add(rumps.MenuItem(f"Current: {current['name']}"))
             if current.get("description"):
                 self.model_menu.add(rumps.MenuItem(f"📝 {current['description']}"))
+
+    def _populate_openai_audio_models(self):
+        """Populate the Local LLM model menu, discovering models from the server."""
+        base_url = self.config.get("openai_audio_base_url", "http://localhost:8123/v1").rstrip("/")
+        current_model = self.config.get("openai_audio_model", "stub")
+
+        # Best-effort live discovery of served models.
+        model_ids = []
+        try:
+            r = requests.get(f"{base_url}/models", timeout=3.0)
+            if r.status_code == 200:
+                model_ids = [m.get("id") for m in r.json().get("data", []) if m.get("id")]
+        except Exception as e:
+            logger.debug("openai_audio model discovery failed: %s", e)
+
+        if not model_ids:
+            # Fall back to whatever is configured so the menu is never empty.
+            model_ids = [current_model]
+            self.model_menu.add(rumps.MenuItem(f"⚠️ Server unreachable at {base_url}"))
+            self.model_menu.add(None)
+
+        for model_id in model_ids:
+            title = f"✓ {model_id}" if model_id == current_model else model_id
+            self.model_menu.add(rumps.MenuItem(
+                title,
+                callback=lambda _, m=model_id: self.select_openai_audio_model(m)
+            ))
+
+        self.model_menu.add(None)
+        self.model_menu.add(rumps.MenuItem(f"Current: {current_model}"))
+        self.model_menu.add(rumps.MenuItem(f"🔗 {base_url}"))
+        self.model_menu.add(rumps.MenuItem("⚙️ Set Server URL…", callback=self.configure_openai_audio_url))
+
+    def select_openai_audio_model(self, model_id):
+        """Select a Local LLM model id."""
+        self.config["openai_audio_model"] = model_id
+        save_config(self.config)
+        self._refresh_model_menu()
+        if self.config.get("show_notifications", True):
+            rumps.notification(title="Model Changed", subtitle="",
+                               message=f"Local LLM model: {model_id}", sound=False)
+        logger.info(f"Selected openai_audio model: {model_id}")
+
+    def configure_openai_audio_url(self, _):
+        """Configure the Local LLM server base URL (OpenAI-compatible)."""
+        current = self.config.get("openai_audio_base_url", "http://localhost:8123/v1")
+        window = rumps.Window(
+            title="Local LLM Server URL",
+            message="OpenAI-compatible base URL, e.g.\nhttp://localhost:8123/v1",
+            default_text=current,
+            ok="Save", cancel="Cancel", dimensions=(320, 24),
+        )
+        response = window.run()
+        if response.clicked:
+            new_url = response.text.strip()
+            if new_url:
+                self.config["openai_audio_base_url"] = new_url
+                save_config(self.config)
+                self._refresh_model_menu()
+                if self.config.get("show_notifications", True):
+                    rumps.notification(title="Server URL Saved", subtitle="",
+                                       message=new_url, sound=False)
+                logger.info(f"openai_audio base URL saved: {new_url}")
 
     def _get_model_by_id(self, model_id):
         """Get model dict by its ID."""

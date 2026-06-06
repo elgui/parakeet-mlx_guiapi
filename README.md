@@ -15,6 +15,7 @@ A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella
 - **Speaker diarization** - identify who said what in multi-speaker audio 🗣️
 - **Clipboard integration** for quick copy of transcription results 📋
 - **Menu bar app** for one-click voice-to-clipboard with model switching and history (macOS) 🖥️
+- **Multiple transcription providers** — Parakeet-MLX (local), Deepgram (cloud), and a self-hosted **Local Model Server** that transcribes audio through a multimodal LLM (gemma-4-12b-qat via llama.cpp), administered from the menu bar via SwiftBar 🧠
 - **25 languages supported** including English, French, Spanish, German, and more 🌍
 - Comprehensive CLI client with pip-installable commands 💻
 

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Local Model Server — ENGINE (llama.cpp omni backend).
+
+  Runs LM Studio's bundled llama-server runtime (Metal) standalone against the
+  gemma-4-12b-qat omni GGUF + audio/vision projector. Serves text + image + AUDIO on
+  127.0.0.1:8124 via the OpenAI chat API — the audio path LM Studio's own API refuses.
+
+  DYLD_LIBRARY_PATH is REQUIRED: the binary loads libmtmd / libllama / libggml-metal
+  from its own backend directory.
+
+  Install:  cp com.gui.local-model-engine.plist ~/Library/LaunchAgents/ && chmod 600 ~/Library/LaunchAgents/com.gui.local-model-engine.plist
+  Start:    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gui.local-model-engine.plist
+
+  NOTE: the runtime path is pinned to 2.20.1 (the version with Gemma 4 audio support).
+  When LM Studio updates its runtime, bump the version in ProgramArguments + DYLD path.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gui.local-model-engine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/gui/.lmstudio/extensions/backends/llama.cpp-mac-arm64-apple-metal-advsimd-2.20.1/llama-server</string>
+        <string>-m</string>
+        <string>/Volumes/models/lmstudio/lmstudio-community/gemma-4-12B-it-QAT-GGUF/gemma-4-12B-it-QAT-Q4_0.gguf</string>
+        <string>--mmproj</string>
+        <string>/Volumes/models/lmstudio/lmstudio-community/gemma-4-12B-it-QAT-GGUF/mmproj-gemma-4-12B-it-QAT-BF16.gguf</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8124</string>
+        <string>-ngl</string>
+        <string>99</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/gui/.lmstudio/extensions/backends/llama.cpp-mac-arm64-apple-metal-advsimd-2.20.1</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>DYLD_LIBRARY_PATH</key>
+        <string>/Users/gui/.lmstudio/extensions/backends/llama.cpp-mac-arm64-apple-metal-advsimd-2.20.1</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/gui/dev/parakeet-mlx_guiapi/local_model_engine.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/gui/dev/parakeet-mlx_guiapi/local_model_engine.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
