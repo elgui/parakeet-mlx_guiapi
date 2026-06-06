@@ -226,21 +226,18 @@ launchctl print     gui/$(id -u)/com.gui.parakeet                               
 
 **Logs**: `stdout.log` and `stderr.log` at the repo root (paths set by plist `StandardOutPath` / `StandardErrorPath`). Both gitignored.
 
-## Local Model Server (self-hosted multimodal LLM)
+## Local Model Server (external companion repo)
 
-A self-owned OpenAI-compatible server for running local LLMs with **audio** input — which LM Studio and Ollama can load but cannot serve over their APIs (both reject audio content as `text|image_url` only). The capability lives in the engine, not the GUI: gemma-4-12b-qat's encoder-free design transcribes audio fine when driven through llama.cpp directly.
+The `openai_audio` provider talks to a **separate project** — the **Local Model Server** at
+`~/dev/local-model-server/` (its own repo). That server runs gemma-4-12b-qat via llama.cpp
+and exposes an OpenAI-compatible `/v1/audio/transcriptions` (plus chat) on `:8123`, doing the
+audio that LM Studio/Ollama refuse over their APIs. It is **not part of this repo** — only the
+provider client lives here.
 
-Two cooperating launchd services + a SwiftBar admin:
-
-- **Engine** (`com.gui.local-model-engine`, port 8124) — LM Studio's bundled `llama-server` runtime (Metal) run standalone against the `gemma-4-12B-it-QAT` omni GGUF + `mmproj` audio/vision projector. Serves text + image + audio via the OpenAI chat API. Requires `DYLD_LIBRARY_PATH` to the backend dir (set in the plist). Runtime version is pinned (2.20.1) — bump in the plist when LM Studio updates.
-- **Gateway** (`com.gui.local-model-server`, port 8123) — `local_model_server.py`, a FastAPI front door that proxies `/v1/models` + `/v1/chat/completions` + `/v1/completions` to the engine (text/image/audio, streaming) and **adapts `/v1/audio/transcriptions`** → a gemma audio chat call with `enable_thinking:false`, returning the OpenAI transcription shape. This is what the Parakeet daemon's `openai_audio` provider talks to.
-
-**Control** (also driven by the SwiftBar plugin `local-model-server.10s.sh`):
-```bash
-./local_model_server_ctl.sh <engine|gateway|all> <start|stop|restart|status|health|logs|install>
-```
-
-**Chain when transcribing via this provider**: Parakeet daemon (`:8080`) → gateway (`:8123`) → engine (`:8124`) → gemma-4-12b-qat. Logs: `local_model_engine.log`, `local_model_server.log` (gitignored).
+To use it: start that server (`local_model_server_ctl.sh all start` in its repo), then set
+`stt_provider: "openai_audio"` (config defaults already point `openai_audio_base_url` at
+`http://localhost:8123/v1`). Transcription chain: Parakeet daemon (`:8080`) → Local Model
+Server gateway (`:8123`) → engine (`:8124`) → gemma-4-12b-qat.
 
 ## Testing
 

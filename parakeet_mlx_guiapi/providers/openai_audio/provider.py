@@ -2,9 +2,9 @@
 OpenAI-compatible audio transcription provider.
 
 Uses the OpenAI `POST {base_url}/audio/transcriptions` contract (multipart upload),
-which is what local audio servers converge on. Pairs with the project's own
-Local Model Server gateway (local_model_server.py) but works against any
-OpenAI-compatible STT endpoint.
+which is what local audio servers converge on. Pairs with the companion Local Model
+Server project (~/dev/local-model-server) but works against any OpenAI-compatible
+STT endpoint.
 
 Notes / limitations:
 - LLM/Whisper-style transcription returns plain text. Without `verbose_json` segment
