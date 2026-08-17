@@ -129,8 +129,11 @@ example in `test_ws_live.py` for the exact message protocol.
 
 ## Other UIs
 
-- **Gradio interface:** `http://localhost:8081`
-- **Landing page:** `http://localhost:8080/`
+- **Gradio interface:** `http://localhost:8081` — go here directly.
+- **Landing page:** `http://localhost:8080/` — ⚠ currently broken. It renders an iframe
+  pointing at a hardcoded `http://localhost:5001` (`app.py:40`), which is only correct
+  when `app.py` is run standalone on its default port 5000. Under `run.py` / the daemon,
+  Gradio listens on `port + 1` (8081), so the iframe loads nothing. Tracked in `TASK.md`.
 
 ---
 

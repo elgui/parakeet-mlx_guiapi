@@ -12,12 +12,17 @@ A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella
 - Visualization of transcription results with timeline and heatmap 📊
 - Audio segment extraction and playback 🎧
 - **Live microphone recording** with direct transcription 🎤
+- **Live streaming transcription** over WebSocket at `/live`, with real-time speaker labels ⚡
 - **Speaker diarization** - identify who said what in multi-speaker audio 🗣️
 - **Clipboard integration** for quick copy of transcription results 📋
 - **Menu bar app** for one-click voice-to-clipboard with model switching and history (macOS) 🖥️
-- **Multiple transcription providers** — Parakeet-MLX (local), Deepgram (cloud), and `openai_audio` for any OpenAI-compatible endpoint, including the companion [Local Model Server](../local-model-server) project that transcribes via a multimodal LLM (gemma-4-12b-qat through llama.cpp) 🧠
+- **Always-on launchd daemon** that owns the model, so the menu bar app starts instantly 🔁
+- **Multiple transcription providers** — Parakeet-MLX (local), Deepgram (cloud), and `openai_audio` for any OpenAI-compatible endpoint, including the companion Local Model Server project (a separate repo) that transcribes via a multimodal LLM (gemma-4-12b-qat through llama.cpp) 🧠
 - **25 languages supported** including English, French, Spanish, German, and more 🌍
 - Comprehensive CLI client with pip-installable commands 💻
+
+> **Integrating another app?** `API.md` is the full local API contract — every endpoint,
+> every form field, response shapes, and error strings.
 
 ## Prerequisites ✅
 
@@ -28,6 +33,11 @@ A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella
 **Note:** This project is optimized for Apple Silicon. All ML inference runs locally:
 - **Transcription:** Uses MLX (Apple's ML framework) - GPU accelerated
 - **Diarization:** Uses PyTorch CPU for stability - no CUDA needed
+
+`parakeet-mlx` itself is a normal pip dependency (pinned in `requirements.txt`) — you do
+**not** need to clone it. If a sibling checkout exists at `../parakeet-mlx`, `run.py` and
+`app.py` prepend it to `sys.path` so you can develop against a local copy of the library;
+that path is optional and skipped when absent.
 
 ## Quick Start 🚀
 
@@ -40,7 +50,7 @@ A comprehensive GUI and REST API for [parakeet-mlx](https://github.com/senstella
 brew install ffmpeg
 
 # 2. Clone and enter the repository
-git clone https://github.com/yourusername/parakeet-mlx_guiapi.git
+git clone https://github.com/elgui/parakeet-mlx_guiapi.git
 cd parakeet-mlx_guiapi
 
 # 3. Create virtual environment and install
@@ -64,10 +74,35 @@ This installs **Parakeet.app** to `/Applications`. Launch it from:
 python run.py
 ```
 
-- **Web GUI**: http://localhost:8081
+- **Web GUI (Gradio)**: http://localhost:8081
+- **Live transcription**: http://localhost:8080/live
 - **REST API**: http://localhost:8080/api/
 
 The first run will download the model (~1.2GB).
+
+### Option C: Always-On Daemon (what the menu bar app expects)
+
+Instead of running `run.py` in a terminal, install it as a launchd user agent so it
+starts at login and restarts on crash:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gui.parakeet.plist  # start
+launchctl bootout    gui/$(id -u) ~/Library/LaunchAgents/com.gui.parakeet.plist  # stop
+launchctl kickstart -k gui/$(id -u)/com.gui.parakeet                             # restart
+launchctl print      gui/$(id -u)/com.gui.parakeet                               # status
+```
+
+The plist must set these environment variables, or things break in non-obvious ways:
+
+| Var | Value | Why |
+|-----|-------|-----|
+| `PATH` | `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | launchd's default `PATH` has no Homebrew; pydub needs `ffprobe`/`ffmpeg` to decode mp3/m4a |
+| `MPLBACKEND` | `Agg` | matplotlib's macOS GUI backend crashes on worker threads when rendering the visualization PNGs |
+| `HF_HOME` | your HuggingFace cache root | Stops the daemon re-downloading models |
+| `HUGGINGFACE_HUB_CACHE` | `$HF_HOME/hub` | Same cache path `parakeet_mlx.from_pretrained` reads |
+| `PYTORCH_ENABLE_MPS_FALLBACK` | `1` | Pyannote diarization falls back to CPU where an MPS op is missing |
+
+Logs land in `stdout.log` / `stderr.log` at the repo root (both gitignored).
 
 ## Usage ▶️
 
@@ -118,20 +153,39 @@ The following API endpoints are available:
 POST /api/transcribe
 ```
 
-Parameters (multipart/form-data):
-- `file`: The audio file to transcribe (required) ⬆️
-- `output_format`: Format for output (json, txt, srt, vtt, csv) (optional, default: json) 📄
-- `highlight_words`: Enable word-level timestamps (optional, default: false) ✨
-- `chunk_duration`: Duration in seconds for chunking long audio (optional, default: 120) ⏱️
-- `overlap_duration`: Overlap duration in seconds when using chunking (optional, default: 15) 🔄
+Parameters (multipart/form-data). Only `file` is required — everything else falls back to
+`~/.parakeet_mlx_guiapi.json`:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `file` | — | **Required.** Audio/video file ⬆️ |
+| `output_format` | `json` | `json` \| `txt` \| `srt` \| `vtt` \| `csv` 📄 |
+| `highlight_words` | `false` | Word-level timestamps in SRT/VTT ✨ |
+| `chunk_duration` | `120` | Seconds; `0` disables chunking ⏱️ |
+| `overlap_duration` | `15` | Seconds of overlap between chunks (parakeet path) 🔄 |
+| `provider` | config | `parakeet` \| `deepgram` \| `openai_audio` 🔀 |
+| `model` | config | Override the model for the chosen provider 🧠 |
+| `enable_diarization` | config | `true` \| `false`; not supported by `openai_audio` 🗣️ |
+| `deepgram_options` | — | JSON string; only meaningful with `provider=deepgram` ⚙️ |
 
 Response:
 - For JSON format: JSON object with transcription results and visualizations 📊
 - For other formats: File download with the appropriate content type ⬇️
 
+> **Gotcha:** the `json` response embeds two base64 PNGs (`visualization`, `heatmap`) that
+> bloat the payload. For app integration prefer `output_format=txt`, or parse the JSON and
+> drop those two fields. See `API.md`.
+
 Example cURL request:
 ```bash
 curl -X POST -F "file=@audio.mp3" -F "output_format=json" http://localhost:8080/api/transcribe
+
+# Force a specific provider and model for one request
+curl -X POST -F "file=@audio.mp3" -F "output_format=txt" \
+  -F "provider=deepgram" -F "model=nova-3" \
+  -F "enable_diarization=true" \
+  -F 'deepgram_options={"smart_format":true,"punctuate":true}' \
+  http://localhost:8080/api/transcribe
 ```
 
 #### Get Audio Segment ✂️🎧
@@ -166,6 +220,30 @@ Example cURL request:
 ```bash
 curl http://localhost:8080/api/models
 ```
+
+### Live Transcription (WebSocket) ⚡
+
+Open **http://localhost:8080/live** for the streaming UI, or drive the socket directly at
+`ws://localhost:8080/ws/live-transcribe`.
+
+```javascript
+// Client → Server
+{type: "config", enable_diarization: true, provider: "deepgram", model: "nova-3"}
+{type: "audio_chunk", data: "<base64 WAV>", chunk_start: 0.0}
+{type: "export", format: "txt"|"srt"}
+{type: "clear"}
+
+// Server → Client
+{type: "connected", session_id, provider, diarization_enabled, ...}
+{type: "transcription", messages: [{speaker, text, start_time, end_time, color}, ...]}
+{type: "status", message, debug}
+{type: "export_result", content, filename}
+```
+
+Speakers are tracked **across** chunks using SpeechBrain ECAPA-VoxCeleb embeddings, so
+`SPEAKER_00` in chunk 1 stays `SPEAKER_00` in chunk 9. When cloud diarization fails on a
+short chunk, pyannote takes over locally. `test_streaming_injection.py` is a working
+client that replays `static/test/2ppl-FR.mp3` through the socket.
 
 ### CLI Client 💻
 
@@ -267,6 +345,7 @@ After installation, find **Parakeet** in:
 
 | Feature | Description |
 |---------|-------------|
+| **Provider Switching** | Parakeet (local), Deepgram (cloud), or `openai_audio`; for `openai_audio` the app discovers models from the gateway and offers **Set Server URL…** |
 | **Model Selection** | Switch between models organized by category; selection is sent per-request to the daemon |
 | **Daemon Health** | Status item shows `Daemon: ● ready` or `Daemon: ○ offline`; polled every 30s |
 | **Recording Timer** | See elapsed time while recording (🔴 0:15) |
@@ -405,7 +484,9 @@ parakeet-menubar
 
 ## License 📜
 
-This project is licensed under the Apache 2.0 License - see the LICENSE file for details.
+No license has been chosen for this project yet, so default copyright applies. Note that
+the upstream [parakeet-mlx](https://github.com/senstella/parakeet-mlx) library and the
+Nvidia model weights carry their own licenses — check those before redistributing.
 
 ## Contributing 👋
 

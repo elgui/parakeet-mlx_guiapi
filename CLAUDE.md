@@ -191,7 +191,9 @@ python client.py audio.mp3 --segment 10-20 --output-file segment.wav
 macOS menu bar application for voice-to-clipboard transcription. **Thin HTTP client** of the launchd daemon — no local inference, no `parakeet_mlx` import in this process. Launches in <1s; first transcription only takes daemon-load time.
 
 **Features**:
-- Provider switching (Parakeet/Deepgram) — sent per-request to daemon
+- Provider switching (Parakeet/Deepgram/`openai_audio`) — sent per-request to daemon. For
+  `openai_audio` the app discovers models live from the gateway's `/v1/models` and exposes
+  a `Set Server URL…` item (`menubar_app.py:802`)
 - Model selection per provider — sent per-request to daemon
 - Deepgram options toggle — sent per-request as JSON form field
 - Parakeet options (chunk duration, language)
@@ -242,6 +244,14 @@ Server gateway (`:8123`) → engine (`:8124`) → gemma-4-12b-qat.
 ## Testing
 
 ```bash
+# Unit tests (what CI runs — .github/workflows/ci.yml)
+pytest tests/ -v
+
+# Individual suites
+pytest tests/test_transcription.py -v
+pytest tests/test_diarization.py -v
+pytest tests/test_menubar_recording.py -v   # excluded from the first CI pass
+
 # Test streaming injection (simulates browser WebSocket)
 python test_streaming_injection.py
 
@@ -249,18 +259,50 @@ python test_streaming_injection.py
 # Streams in 8s chunks with 500ms delay
 ```
 
+Root-level `test_*.py` scripts (`test_ws_live.py`, `test_ws_multi.py`,
+`test_live_auto.py`, `test_live_transcription.py`, `test_streaming_injection.py`) are
+**manual integration drivers against a running daemon**, not pytest suites — `pytest.ini`
+scopes collection to `tests/`.
+
 ## Dependencies
 
 **Required**: macOS with Apple Silicon (M1/M2/M3/M4), ffmpeg (`brew install ffmpeg`)
 
 **Key packages**:
-- `parakeet-mlx` - Core ASR model
-- `pyannote.audio >= 3.1.0` - Speaker diarization (requires HF token)
+- `parakeet-mlx` - Core ASR model (a pip dependency; no sibling clone required, though
+  `run.py:17` / `app.py:12` prepend `../parakeet-mlx` to `sys.path` when it happens to exist)
+- `pyannote.audio >= 3.1.0, < 4.0` - Speaker diarization (requires HF token; 4.x breaks on torchcodec)
 - `speechbrain` - Speaker embeddings for cross-chunk tracking
-- `flask`, `flask-sock` - REST API and WebSocket
+- `flask`, `flask-cors`, `flask-sock` - REST API, CORS, and WebSocket
 - `gradio` - File transcription UI
-- `rumps` - macOS menu bar
-- `sounddevice` - Microphone recording
+- `rumps`, `py2app` - macOS menu bar app and its bundler
+- `sounddevice`, `pydub`, `scipy`, `soundfile` - Audio capture and processing
+- `requests` - HTTP client used by `client.py` and the menu bar app
+- `pandas`, `matplotlib`, `numpy` - Segment tables and timeline/heatmap rendering
+
+## Design Decisions
+
+Why the code is shaped the way it is. Change these deliberately, not incidentally.
+
+1. **Single inference engine, single model load.** The launchd daemon owns MLX/Metal. Every
+   other component — menu bar app, CLI client, Gradio UI, WebSocket sessions — is an HTTP
+   client of it. Two processes loading the same MLX model would double GPU memory and race
+   on the Metal stream.
+2. **Provider abstraction over direct calls.** `providers/base.py` defines `STTProvider` and
+   `TranscriptionResult` so local and cloud paths are interchangeable at the call site.
+   Adding a provider means one new module, not edits scattered across routes and UI.
+3. **Per-request config, not server state.** Provider, model, diarization, and Deepgram
+   options travel as form fields on each `/api/transcribe` call; the daemon caches provider
+   instances keyed on the resolved tuple (`routes.py:71`). Clients stay stateless and the
+   daemon never needs a restart to switch providers.
+4. **Separation of concerns.** API, UI, providers, and the transcription engine are separate
+   packages so one can change without touching the others.
+5. **Centralized configuration.** `utils/config.py` merges defaults, environment variables,
+   and `~/.parakeet_mlx_guiapi.json`, in that order.
+6. **Diarization on PyTorch CPU.** Chosen for stability over MPS; `PYTORCH_ENABLE_MPS_FALLBACK=1`
+   covers the ops pyannote needs that MPS lacks.
+7. **Apple Silicon only, by construction.** MLX is Metal-backed with no Linux build, so
+   containerized or cross-platform deployment is not a supported path.
 
 ## Key Implementation Details
 

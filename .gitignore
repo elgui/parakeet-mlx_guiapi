@@ -23,3 +23,8 @@ __pycache__/
 
 # Local agent worktrees (created by Claude Code background agents)
 /.claude/worktrees/
+
+# Large local-only audio fixtures. Nothing in the codebase reads these — the fixtures
+# that ARE referenced (static/test/2ppl-FR.mp3, test_segment.wav) stay tracked.
+/2ppl-FR.mp3
+/test_discussion.wav
