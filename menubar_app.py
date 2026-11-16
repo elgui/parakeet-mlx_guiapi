@@ -2093,6 +2093,44 @@ read -n 1
             logger.info("Stopping recording...")
             self.stop_recording()
 
+    def _validate_and_get_device(self):
+        """Validate selected microphone and return device index to use.
+
+        Returns tuple: (device_index, device_name, warning_message)
+        - device_index: int or None (None = system default)
+        - device_name: str for logging
+        - warning_message: str if fallback occurred, None otherwise
+        """
+        selected_device = self.config.get("selected_microphone", None)
+
+        if selected_device is None:
+            # System default requested
+            default_idx = self._get_default_input_device()
+            devices = self._get_input_devices()
+            default_name = next((d['name'] for d in devices if d['index'] == default_idx), "System Default")
+            return None, default_name, None
+
+        # Check if selected device still exists
+        devices = self._get_input_devices()
+        device_exists = any(d['index'] == selected_device for d in devices)
+
+        if device_exists:
+            device_name = next((d['name'] for d in devices if d['index'] == selected_device), f"Device {selected_device}")
+            return selected_device, device_name, None
+        else:
+            # Device no longer available - fallback to system default
+            old_device_name = f"Device {selected_device}"
+            default_idx = self._get_default_input_device()
+            default_name = next((d['name'] for d in devices if d['index'] == default_idx), "System Default")
+            warning = f"'{old_device_name}' unavailable, using '{default_name}'"
+            logger.warning(f"Selected microphone not found: {warning}")
+
+            # Clear invalid selection from config
+            self.config["selected_microphone"] = None
+            save_config(self.config)
+
+            return None, default_name, warning
+
     def start_recording(self):
         """Start recording from microphone."""
         try:
@@ -2100,6 +2138,20 @@ read -n 1
             import numpy as np
 
             logger.info("start_recording: Initializing...")
+
+            # Validate microphone before changing UI state
+            device_index, device_name, device_warning = self._validate_and_get_device()
+
+            if device_warning:
+                logger.warning(f"Microphone fallback: {device_warning}")
+                self.status_item.title = f"⚠️ {device_warning}"
+                rumps.notification(
+                    title="Microphone Changed",
+                    subtitle="",
+                    message=device_warning,
+                    sound=True
+                )
+
             self.recording = True
             self._recording_start_time = time.time()
             self.title = self.ICON_RECORDING
@@ -2117,16 +2169,9 @@ read -n 1
                 if self.recording:
                     self._audio_data.append(indata.copy())
 
-            # Start recording stream with selected microphone
-            selected_device = self.config.get("selected_microphone", None)
-            device_name = "System Default"
-            if selected_device is not None:
-                devices = self._get_input_devices()
-                device_name = next((d['name'] for d in devices if d['index'] == selected_device), f"Device {selected_device}")
-
             logger.info(f"start_recording: Creating InputStream (device={device_name}, rate={self.sample_rate}, channels={self.channels})")
             self._stream = sd.InputStream(
-                device=selected_device,  # None = system default
+                device=device_index,  # None = system default
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype=np.float32,
@@ -2141,25 +2186,39 @@ read -n 1
             if self.config.get("show_notifications", True):
                 rumps.notification(
                     title="Recording Started",
-                    subtitle="",
+                    subtitle=f"Using: {device_name}",
                     message="Click the icon again to stop",
                     sound=False
                 )
 
         except Exception as e:
-            logger.error(f"start_recording: Error - {e}", exc_info=True)
+            error_msg = str(e)
+            logger.error(f"start_recording: Error - {error_msg}", exc_info=True)
             self.recording = False
             self.title = self.ICON_ERROR
             self.record_button.title = "🎤 Start Recording"
             self.cancel_button.set_callback(None)  # Disable cancel button
+            self._last_error = error_msg
+
+            # Parse error for user-friendly message
+            if "PortAudio" in error_msg or "-9986" in error_msg:
+                user_msg = "Microphone unavailable. Check Settings > Microphone"
+            elif "permission" in error_msg.lower():
+                user_msg = "Microphone permission denied. Check System Preferences"
+            else:
+                user_msg = error_msg[:80]
+
+            # Update status item with error
+            self.status_item.title = f"❌ Error: {user_msg[:40]}"
+
             rumps.notification(
                 title="Recording Error",
-                subtitle="",
-                message=str(e)[:100],
+                subtitle="Click menu for details",
+                message=user_msg,
                 sound=True
             )
-            # Reset icon after a moment
-            threading.Timer(2.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
+            # Keep error icon visible longer (5 seconds)
+            threading.Timer(5.0, lambda: setattr(self, 'title', self.ICON_IDLE)).start()
 
     def _start_recording_timer(self):
         """Start a timer to update recording duration in title."""
